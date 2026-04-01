@@ -31,7 +31,7 @@ server.registerTool('ping', {
 
 // ---- チャンネル一覧 ----
 server.registerTool('get_services', {
-  description: 'EDCBが認識しているチャンネル（サービス）一覧を取得します。get_epg・search_events・add_reserveで必要なonid/tsid/sidはここで確認します。出力例: "[4ch] NHK総合 (32736-32736-1024) - 地上デジタル"',
+  description: 'EDCBが認識しているチャンネル（サービス）一覧を取得します。get_epg・search_events・add_reserveで必要なonid/tsid/sidはここで確認します。出力形式: "[リモコン番号ch] サービス名 (onid-tsid-sid) - ネットワーク名"。onid=オリジナルネットワークID、tsid=トランスポートストリームID、sid=サービスID。例: "[4ch] NHK総合 (32736-32736-1024) - 地上デジタル"',
   inputSchema: {
     network: z.string().optional().describe('ネットワーク名でフィルタ（例: "地上波", "BS", "CS"）'),
   },
@@ -149,6 +149,7 @@ server.registerTool('search_events', {
     '全サービスのEPGをクライアント側でフィルタするため、チャンネルを絞り込む場合はonid/tsid/sidを指定すると高速になります。',
     'ジャンル名の例: "ニュース", "スポーツ", "アニメ", "映画", "ドラマ", "バラエティ", "音楽", "情報", "ドキュメント"',
     '開始時刻は日本時間(JST)で "YYYY-MM-DD HH:MM" 形式で指定します。',
+    '出力形式: "[onid-tsid-sid-eid] タイトル"。onid=オリジナルネットワークID、tsid=トランスポートストリームID、sid=サービスID、eid=イベントID(番組固有ID)。番組識別にはこの4つの値が必要です。',
   ].join(' '),
   inputSchema: {
     keyword: z.string().optional().describe('タイトルまたは番組説明に含まれるキーワード（部分一致）'),
