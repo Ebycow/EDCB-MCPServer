@@ -11,6 +11,11 @@ const server = new McpServer({
   version: '1.0.0',
 });
 
+/** 地上デジタル放送かどうかをONIDで判定（ARIB規格: 0x7880以上が地上波割り当て） */
+function isTerrestrial(onid: number): boolean {
+  return onid >= 0x7880;
+}
+
 /** "YYYY-MM-DD HH:MM" または "YYYY-MM-DDTHH:MM" 形式をJSTとして解釈してDateを返す */
 function parseJSTString(s: string): Date {
   const normalized = s.trim().replace(' ', 'T');
@@ -29,22 +34,61 @@ server.registerTool('ping', {
   };
 });
 
+// ---- ARIBジャンルテーブル ----
+const ARIB_GENRES: Array<{ major: string; minor: string[] }> = [
+  { major: 'ニュース／報道', minor: ['定時・総合', '天気', '特集・ドキュメント', '政治・国会', '経済・市況', '海外・国際', '解説', '討論・会談', '報道特番', 'ローカル・地域', '交通'] },
+  { major: 'スポーツ', minor: ['スポーツニュース', '野球', 'サッカー', 'ゴルフ', 'その他の球技', '相撲・格闘技', 'オリンピック・国際大会', 'マラソン・陸上・水泳', 'モータースポーツ', 'マリン・ウィンタースポーツ', '競馬・公営競技'] },
+  { major: '情報／ワイドショー', minor: ['芸能・ワイドショー', 'ファッション', '暮らし・住まい', '健康・医療', 'ショッピング・通販', 'グルメ・料理', 'イベント', '番組紹介・お知らせ'] },
+  { major: 'ドラマ', minor: ['国内ドラマ', '海外ドラマ', '時代劇'] },
+  { major: '音楽', minor: ['国内ロック・ポップス', '海外ロック・ポップス', 'クラシック・オペラ', 'ジャズ・フュージョン', '歌謡曲・演歌', 'ライブ・コンサート', 'ランキング・リクエスト', 'カラオケ・のど自慢', '民謡・邦楽', '童謡・キッズ', '民族音楽・ワールドミュージック'] },
+  { major: 'バラエティ', minor: ['クイズ', 'ゲーム', 'トークバラエティ', 'お笑い・コメディ', '音楽バラエティ', '旅バラエティ', '料理バラエティ'] },
+  { major: '映画', minor: ['洋画', '邦画', 'アニメ'] },
+  { major: 'アニメ／特撮', minor: ['国内アニメ', '海外アニメ', '特撮'] },
+  { major: 'ドキュメンタリー／教養', minor: ['社会・時事', '歴史・紀行', '自然・動物・環境', '宇宙・科学・医学', 'カルチャー・伝統文化', '文学・文芸', 'スポーツ', 'ドキュメンタリー全般', 'インタビュー・討論'] },
+  { major: '劇場／公演', minor: ['現代劇・新劇', 'ミュージカル', 'ダンス・バレエ', '落語・演芸', '歌舞伎・古典'] },
+  { major: '趣味／教育', minor: ['旅・釣り・アウトドア', '園芸・ペット・手芸', '音楽・美術・工芸', '囲碁・将棋', '麻雀・パチンコ', '車・オートバイ', 'コンピュータ・ＴＶゲーム', '会話・語学', '幼児・小学生', '中学生・高校生', '大学生・受験', '生涯教育・資格', '教育問題'] },
+  { major: '福祉', minor: ['高齢者', '障害者', '社会福祉', 'ボランティア', '手話', '文字（字幕）', '音声解説'] },
+];
+
+// ---- ジャンル一覧 ----
+server.registerTool('list_genres', {
+  description: 'EPG番組検索で使えるジャンル名の一覧を返します。search_eventsのgenreNameパラメータに渡す値を確認するために使います。大カテゴリ（ニュース／報道、スポーツ…）と小カテゴリ（野球、サッカー…）の階層構造で表示します。genreNameは部分一致なので大カテゴリ名でも小カテゴリ名でも使えます',
+  inputSchema: {},
+}, async () => {
+  const lines = ARIB_GENRES.flatMap((g) => [
+    `【${g.major}】`,
+    ...g.minor.map((m) => `  - ${m}`),
+  ]);
+  return { content: [{ type: 'text', text: lines.join('\n') }] };
+});
+
 // ---- チャンネル一覧 ----
 server.registerTool('get_services', {
-  description: 'EDCBが認識しているチャンネル（サービス）一覧を取得します。get_epg・search_events・add_reserveで必要なonid/tsid/sidはここで確認します。出力形式: "[リモコン番号ch] サービス名 (onid-tsid-sid) - ネットワーク名"。onid=オリジナルネットワークID、tsid=トランスポートストリームID、sid=サービスID。例: "[4ch] NHK総合 (32736-32736-1024) - 地上デジタル"',
+  description: 'EDCBが認識しているチャンネル（サービス）一覧を取得します。get_epg・search_events・add_reserveで必要なonid/tsid/sidはここで確認します。出力形式: "[リモコン番号ch] サービス名 (onid-tsid-sid) - ネットワーク種別(実際のnetwork_name)"。networkは部分一致でフィルタします。"地上波"または"地上"でONIDベースの地上デジタル全局を取得できます（地域名ごとに異なるnetwork_nameを持つ局もまとめて表示）。フィルタが0件の場合は利用可能なネットワーク名一覧を返します',
   inputSchema: {
-    network: z.string().optional().describe('ネットワーク名でフィルタ（例: "地上波", "BS", "CS"）'),
+    network: z.string().optional().describe('ネットワーク名でフィルタ。"地上波"または"地上"で全地上デジタル局、"BS"でBS、"CS"でCS。実際のnetwork_nameによる部分一致も可'),
   },
 }, async ({ network }) => {
   const services = await client.getServices();
+  const isTerrestrialQuery = network && (network.includes('地上') || network === '地デジ');
   const filtered = network
-    ? services.filter((s) => s.network_name.includes(network) || s.service_name.includes(network))
+    ? services.filter((s) =>
+        isTerrestrialQuery
+          ? isTerrestrial(s.onid) || s.network_name.includes(network) || s.service_name.includes(network)
+          : s.network_name.includes(network) || s.service_name.includes(network)
+      )
     : services;
+  if (network && filtered.length === 0) {
+    const networkNames = [...new Set(services.map((s) => s.network_name))].join('、');
+    return {
+      content: [{ type: 'text', text: `"${network}" に一致するチャンネルがありません。利用可能なネットワーク名: ${networkNames || '（チャンネル情報なし）'}` }],
+    };
+  }
   const text = filtered
-    .map(
-      (s) =>
-        `[${s.remote_control_key_id}ch] ${s.service_name} (${s.onid}-${s.tsid}-${s.sid}) - ${s.network_name}`
-    )
+    .map((s) => {
+      const networkType = isTerrestrial(s.onid) ? `地上波(${s.network_name})` : s.network_name;
+      return `[${s.remote_control_key_id}ch] ${s.service_name} (${s.onid}-${s.tsid}-${s.sid}) - ${networkType}`;
+    })
     .join('\n');
   return {
     content: [{ type: 'text', text: text || 'チャンネル情報がありません' }],
@@ -147,13 +191,13 @@ server.registerTool('search_events', {
   description: [
     '番組を検索・絞り込みします。keyword・genreName・番組長・開始時刻のいずれか1つ以上を指定してください。複数指定した場合はAND条件です。',
     '全サービスのEPGをクライアント側でフィルタするため、チャンネルを絞り込む場合はonid/tsid/sidを指定すると高速になります。',
-    'ジャンル名の例: "ニュース", "スポーツ", "アニメ", "映画", "ドラマ", "バラエティ", "音楽", "情報", "ドキュメント"',
+    'ジャンル名はlist_genresツールで確認できます。大カテゴリ（例: "ドラマ"）でも小カテゴリ（例: "国内ドラマ"）でも部分一致で使えます。大カテゴリは検索範囲が広くなり、小カテゴリは絞り込みが強くなります。',
     '開始時刻は日本時間(JST)で "YYYY-MM-DD HH:MM" 形式で指定します。',
     '出力形式: "[onid-tsid-sid-eid] タイトル"。onid=オリジナルネットワークID、tsid=トランスポートストリームID、sid=サービスID、eid=イベントID(番組固有ID)。番組識別にはこの4つの値が必要です。',
   ].join(' '),
   inputSchema: {
     keyword: z.string().optional().describe('タイトルまたは番組説明に含まれるキーワード（部分一致）'),
-    genreName: z.string().optional().describe('ジャンル名の部分一致（例: "ニュース", "スポーツ", "アニメ"）。get_epgの結果に表示されるジャンル名を参考にしてください'),
+    genreName: z.string().optional().describe('ジャンル名の部分一致。使えるジャンル名はlist_genresで確認してください。大カテゴリ（例: "ドラマ"）は広く、小カテゴリ（例: "国内ドラマ"）は絞り込みが強くなります'),
     durationMin: z.number().optional().describe('番組長の最小値（分）。例: 映画を探す場合は 60 など'),
     durationMax: z.number().optional().describe('番組長の最大値（分）。例: ショート番組を探す場合は 30 など'),
     startAfter: z.string().optional().describe('この日時以降に開始する番組を絞り込む（JST、形式: "YYYY-MM-DD HH:MM"、例: "2026-03-25 19:00"）'),
