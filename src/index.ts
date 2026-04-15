@@ -97,7 +97,7 @@ server.registerTool('get_services', {
 
 // ---- 予約一覧 ----
 server.registerTool('get_reserves', {
-  description: '現在の録画予約一覧を取得します。delete_reserve・change_reserveで使う予約IDはここで確認します。状態が"録画しない"の場合はチューナー不足による重複です',
+  description: '現在の録画予約一覧を取得します。delete_reserve・change_reserve・set_reserve_enabledで使う予約IDはここで確認します。状態が"録画しない"の場合はチューナー不足による重複です。"無効"はset_reserve_enabledで無効化された予約です',
   inputSchema: {},
 }, async () => {
   const reserves = await client.getReserves();
@@ -110,7 +110,8 @@ server.registerTool('get_reserves', {
       const start = client.formatTime(r.starttime);
       const dur = client.formatDuration(r.durationSec);
       const overlap = overlapModes[r.overlapMode] ?? String(r.overlapMode);
-      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  開始: ${start} (${dur})\n  状態: ${overlap}  優先度: ${r.recSetting.priority}`;
+      const enabled = r.recSetting.recEnabled ? '有効' : '無効';
+      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  開始: ${start} (${dur})\n  状態: ${overlap}  優先度: ${r.recSetting.priority}  録画: ${enabled}`;
     })
     .join('\n\n');
   return {
@@ -305,6 +306,21 @@ server.registerTool('delete_reserve', {
   await client.deleteReserve(id);
   return {
     content: [{ type: 'text', text: `予約ID ${id} を削除しました` }],
+  };
+});
+
+// ---- 予約有効/無効切り替え ----
+server.registerTool('set_reserve_enabled', {
+  description: '録画予約の有効・無効を切り替えます。無効にしても予約は残るため、後から再度有効化できます。delete_reserveと異なり取り消し可能な安全な操作です。予約IDはget_reservesの "[ID:xxx]" から取得してください',
+  inputSchema: {
+    id: z.number().describe('対象の予約ID'),
+    enabled: z.boolean().describe('true=有効（録画する）、false=無効（録画しない）'),
+  },
+}, async ({ id, enabled }) => {
+  await client.setReserveEnabled(id, enabled);
+  const state = enabled ? '有効' : '無効';
+  return {
+    content: [{ type: 'text', text: `予約ID ${id} を${state}にしました` }],
   };
 });
 

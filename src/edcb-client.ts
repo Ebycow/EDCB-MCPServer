@@ -18,6 +18,7 @@ export interface RecFolder {
 }
 
 export interface RecSetting {
+  recEnabled: boolean;
   recMode: number;
   priority: number;
   tuijyuuFlag: boolean;
@@ -121,6 +122,7 @@ function toArray<T>(val: T | T[] | undefined): T[] {
 function parseRecSetting(r: any): RecSetting {
   const folders = toArray(r?.recFolderList?.recFolderInfo);
   return {
+    recEnabled: bool(r?.recEnabled),
     recMode: num(r?.recMode),
     priority: num(r?.priority),
     tuijyuuFlag: bool(r?.tuijyuuFlag),
@@ -329,6 +331,30 @@ export class EdcbClient {
   async deleteReserve(id: number): Promise<void> {
     const ctok = await this.getCsrfToken();
     await this.postForm('/api/SetReserve', { ctok, del: 1 }, { id });
+  }
+
+  async setReserveEnabled(id: number, enabled: boolean): Promise<void> {
+    const reserves = await this.getReserves();
+    const reserve = reserves.find((r) => r.id === id);
+    if (!reserve) throw new Error(`予約ID ${id} が見つかりません`);
+
+    const ctok = await this.getCsrfToken();
+    const rs = reserve.recSetting;
+    const body: Record<string, string | number | boolean> = {
+      ctok,
+      change: 1,
+      recEnabled: enabled ? 1 : 0,
+      recMode: rs.recMode || 1,
+      priority: rs.priority || 2,
+      tuijyuuFlag: rs.tuijyuuFlag ? 1 : 0,
+      pittariFlag: rs.pittariFlag ? 1 : 0,
+      suspendMode: rs.suspendMode ?? 0,
+      rebootFlag: rs.rebootFlag ? 1 : 0,
+      tunerID: rs.tunerID ?? 0,
+      startMargin: rs.startMargine ?? 0,
+      endMargin: rs.endMargine ?? 0,
+    };
+    await this.postForm('/api/SetReserve', body, { id });
   }
 
   async changeReserve(
