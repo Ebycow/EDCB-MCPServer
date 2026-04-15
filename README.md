@@ -44,6 +44,7 @@ npm run build
 | `search_events` | キーワード番組検索 |
 | `get_reserves` | 録画予約一覧取得 |
 | `add_reserve` | 録画予約追加（デフォルトプリセット使用） |
+| `set_reserve_enabled` | 録画予約の有効/無効切り替え |
 | `delete_reserve` | 録画予約削除 |
 | `change_reserve` | 録画予約設定変更 |
 | `get_rec_info` | 録画済み番組一覧取得 |
@@ -86,7 +87,13 @@ add_reserve(onid=32272, tsid=32272, sid=30720, eid=20202)
 # 予約一覧確認
 get_reserves()
 
-# 予約削除
+# 予約を一時的に無効化（予約は残る）
+set_reserve_enabled(id=2466, enabled=False)
+
+# 予約を再度有効化
+set_reserve_enabled(id=2466, enabled=True)
+
+# 予約削除（取り消し不可）
 delete_reserve(id=2466)
 ```
 
