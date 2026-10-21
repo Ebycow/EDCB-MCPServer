@@ -121,9 +121,12 @@ function toArray<T>(val: T | T[] | undefined): T[] {
 
 function parseRecSetting(r: any): RecSetting {
   const folders = toArray(r?.recFolderList?.recFolderInfo);
+  // EMWUIの新しいAPIは<recEnabled>を返すが、古いAPIは返さず recMode=5 で無効を表す
+  const rawMode = num(r?.recMode);
+  const recEnabled = r?.recEnabled !== undefined ? bool(r.recEnabled) : rawMode !== 5;
   return {
-    recEnabled: bool(r?.recEnabled),
-    recMode: num(r?.recMode),
+    recEnabled,
+    recMode: rawMode,
     priority: num(r?.priority),
     tuijyuuFlag: bool(r?.tuijyuuFlag),
     serviceMode: num(r?.serviceMode),
@@ -344,7 +347,7 @@ export class EdcbClient {
       ctok,
       change: 1,
       recEnabled: enabled ? 1 : 0,
-      recMode: rs.recMode || 1,
+      recMode: rs.recMode >= 0 && rs.recMode <= 4 ? rs.recMode : 1,
       priority: rs.priority || 2,
       tuijyuuFlag: rs.tuijyuuFlag ? 1 : 0,
       pittariFlag: rs.pittariFlag ? 1 : 0,
