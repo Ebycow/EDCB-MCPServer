@@ -192,6 +192,7 @@ server.registerTool('search_events', {
   description: [
     '番組を検索・絞り込みします。keyword・genreName・番組長・開始時刻のいずれか1つ以上を指定してください。複数指定した場合はAND条件です。',
     '全サービスのEPGをクライアント側でフィルタするため、チャンネルを絞り込む場合はonid/tsid/sidを指定すると高速になります。',
+    'onid/tsid/sidは一部だけの指定も可能で、指定した値に一致するチャンネルに絞り込みます（例: onidのみでそのネットワーク全体）。',
     'ジャンル名はlist_genresツールで確認できます。大カテゴリ（例: "ドラマ"）でも小カテゴリ（例: "国内ドラマ"）でも部分一致で使えます。大カテゴリは検索範囲が広くなり、小カテゴリは絞り込みが強くなります。',
     '開始時刻は日本時間(JST)で "YYYY-MM-DD HH:MM" 形式で指定します。',
     '出力形式: "[onid-tsid-sid-eid] タイトル"。onid=オリジナルネットワークID、tsid=トランスポートストリームID、sid=サービスID、eid=イベントID(番組固有ID)。番組識別にはこの4つの値が必要です。',
@@ -217,7 +218,16 @@ server.registerTool('search_events', {
   if (onid !== undefined && tsid !== undefined && sid !== undefined) {
     services = [{ onid, tsid, sid }];
   } else {
-    services = await client.getServices();
+    services = (await client.getServices()).filter(
+      (s) =>
+        (onid === undefined || s.onid === onid) &&
+        (tsid === undefined || s.tsid === tsid) &&
+        (sid === undefined || s.sid === sid)
+    );
+    if (services.length === 0) {
+      const spec = [`onid=${onid ?? '*'}`, `tsid=${tsid ?? '*'}`, `sid=${sid ?? '*'}`].join(', ');
+      return { content: [{ type: 'text', text: `指定されたチャンネル（${spec}）が見つかりません。get_servicesで確認してください` }] };
+    }
   }
 
   const allEvents = (
