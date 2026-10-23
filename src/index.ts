@@ -102,13 +102,24 @@ server.registerTool('get_services', {
 
 // ---- 予約一覧 ----
 server.registerTool('get_reserves', {
-  description: '現在の録画予約一覧を取得します。delete_reserve・change_reserve・set_reserve_enabledで使う予約IDはここで確認します。状態が"録画しない"の場合はチューナー不足による重複です。"無効"はset_reserve_enabledで無効化された予約です',
+  description: '現在の録画予約一覧を取得します。delete_reserve・change_reserve・set_reserve_enabledで使う予約IDはここで確認します。状態が"録画しない"の場合はチューナー不足による重複です。"無効"はset_reserve_enabledで無効化された予約です。"EPGに番組なし"の警告は、番組差し替え等で予約対象の番組がEPGから消えていることを示します（同じ時間帯の番組をget_epgで確認してください）',
   inputSchema: {},
 }, async () => {
   const reserves = await client.getReserves();
   if (reserves.length === 0) {
     return { content: [{ type: 'text', text: '予約がありません' }] };
   }
+  // 予約対象の番組がEPGに残っているか確認する（EPGを取得できなかったサービスは判定しない）
+  const serviceKeys = [...new Set(reserves.map((r) => `${r.onid}-${r.tsid}-${r.sid}`))];
+  const epgEids = new Map<string, Set<number>>();
+  await Promise.all(
+    serviceKeys.map(async (key) => {
+      const [onid, tsid, sid] = key.split('-').map(Number);
+      const events = await client.getEventsForService(onid, tsid, sid, 1).catch(() => null);
+      if (events) epgEids.set(key, new Set(events.map((e) => e.eid)));
+    })
+  );
+
   const overlapModes = ['重複なし', '重複あり', '録画しない'];
   const text = reserves
     .map((r) => {
@@ -116,7 +127,11 @@ server.registerTool('get_reserves', {
       const dur = client.formatDuration(r.durationSec);
       const overlap = overlapModes[r.overlapMode] ?? String(r.overlapMode);
       const enabled = r.recSetting.recEnabled ? '有効' : '無効';
-      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  開始: ${start} (${dur})\n  状態: ${overlap}  優先度: ${r.recSetting.priority}  録画: ${enabled}`;
+      // eid=0xFFFFはプログラム予約（番組に紐付かない）
+      const eids = epgEids.get(`${r.onid}-${r.tsid}-${r.sid}`);
+      const missing = r.eid !== 0xffff && eids && !eids.has(r.eid);
+      const warning = missing ? '\n  ⚠ EPGに番組なし（番組差し替えの可能性）' : '';
+      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  開始: ${start} (${dur})\n  状態: ${overlap}  優先度: ${r.recSetting.priority}  録画: ${enabled}${warning}`;
     })
     .join('\n\n');
   return {
