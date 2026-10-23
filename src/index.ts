@@ -213,11 +213,23 @@ server.registerTool('get_reserves', {
     '"録画しない"はチューナー不足による重複、"無効"はset_reserve_enabledで無効化された予約です。',
     '"EPGに番組なし"の警告は、番組差し替え等で予約対象の番組がEPGから消えていることを示します（同じ時間帯の番組をget_epgで確認してください）。',
     'idを指定すると、その予約の詳細（録画フォルダ・番組追従等）を表示します。',
+    '期間（from/to）・チャンネル（onid/tsid/sid、一部だけの指定も可）・タイトルのキーワード・状態（only）で絞り込めます。先頭に全予約の重複・警告の件数を表示するので、問題の有無だけならonly="problem"で確認できます。',
   ].join(' '),
   inputSchema: {
     id: z.number().optional().describe('詳細を表示する予約ID'),
+    from: z.string().optional().describe('この日時に録画中、またはこれ以降に始まる予約に絞り込む（JST、形式: "YYYY-MM-DD HH:MM"）'),
+    to: z.string().optional().describe('この日時までに始まる予約に絞り込む（JST、形式: "YYYY-MM-DD HH:MM"）'),
+    onid: z.number().optional().describe('チャンネルで絞り込む場合のネットワークID'),
+    tsid: z.number().optional().describe('チャンネルで絞り込む場合のTSID'),
+    sid: z.number().optional().describe('チャンネルで絞り込む場合のサービスID'),
+    keyword: z.string().optional().describe('タイトルに含まれるキーワード（部分一致、全角半角を区別しない）'),
+    only: z
+      .enum(['overlap', 'missing', 'disabled', 'problem'])
+      .optional()
+      .describe('状態で絞り込む。overlap=重複あり・録画しない、missing=EPGに番組なし、disabled=無効、problem=これらのいずれか'),
+    limit: z.number().optional().describe('最大件数（デフォルト50）'),
   },
-}, async ({ id }) => {
+}, async ({ id, from, to, onid, tsid, sid, keyword, only, limit = 50 }) => {
   const reserves = await client.getReserves();
   if (id !== undefined) {
     const r = reserves.find((x) => x.id === id);
@@ -228,13 +240,51 @@ server.registerTool('get_reserves', {
   if (reserves.length === 0) {
     return { content: [{ type: 'text', text: '予約がありません' }] };
   }
+  const fromTime = from ? parseJSTString(from) : undefined;
+  const toTime = to ? parseJSTString(to) : undefined;
+  if ((fromTime && isNaN(fromTime.getTime())) || (toTime && isNaN(toTime.getTime()))) {
+    return { content: [{ type: 'text', text: 'from/toは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
+  }
+
   const missing = await findReservesMissingFromEpg(reserves);
-  const text = reserves
-    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime())
-    .map((r) => formatReserveLine(r, missing.has(r.id)))
-    .join('\n');
+  const isOverlap = (r: ReserveInfo) => r.overlapMode !== 0;
+  const isDisabled = (r: ReserveInfo) => !r.recSetting.recEnabled;
+  const statusFilters = {
+    overlap: isOverlap,
+    missing: (r: ReserveInfo) => missing.has(r.id),
+    disabled: isDisabled,
+    problem: (r: ReserveInfo) => isOverlap(r) || missing.has(r.id) || isDisabled(r),
+  };
+  const kw = keyword ? normalizeForSearch(keyword) : undefined;
+  const matched = reserves
+    .filter(
+      (r) =>
+        (!fromTime || r.starttime.getTime() + r.durationSec * 1000 > fromTime.getTime()) &&
+        (!toTime || r.starttime <= toTime) &&
+        (onid === undefined || r.onid === onid) &&
+        (tsid === undefined || r.tsid === tsid) &&
+        (sid === undefined || r.sid === sid) &&
+        (!kw || normalizeForSearch(r.title).includes(kw)) &&
+        (!only || statusFilters[only](r))
+    )
+    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime());
+
+  const count = (pred: (r: ReserveInfo) => boolean) => reserves.filter(pred).length;
+  const summary =
+    `予約数: ${reserves.length}件（重複あり ${count((r) => r.overlapMode === 1)}件・` +
+    `録画しない ${count((r) => r.overlapMode === 2)}件・無効 ${count(isDisabled)}件・EPGに番組なし ${missing.size}件）`;
+  const filtered = from || to || onid !== undefined || tsid !== undefined || sid !== undefined || keyword || only;
+  if (filtered && matched.length === 0) {
+    return { content: [{ type: 'text', text: `${summary}\n条件に一致する予約はありません` }] };
+  }
+  const shown = matched.slice(0, limit);
+  const text = shown.map((r) => formatReserveLine(r, missing.has(r.id))).join('\n');
+  const header = [summary];
+  if (filtered) header.push(`条件に一致: ${countLabel(matched.length, shown.length)}`);
+  else if (matched.length > shown.length) header.push(`${countLabel(matched.length, shown.length)}（from/to・チャンネル・keyword・onlyで絞り込めます）`);
+  header.push(RESERVE_LINE_LEGEND);
   return {
-    content: [{ type: 'text', text: `予約数: ${reserves.length}件\n${RESERVE_LINE_LEGEND}\n\n${text}` }],
+    content: [{ type: 'text', text: `${header.join('\n')}\n\n${text}` }],
   };
 });
 
