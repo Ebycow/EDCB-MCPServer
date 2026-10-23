@@ -171,6 +171,23 @@ export class EdcbClient {
     return entry;
   }
 
+  /** index/countでページングされるAPI（未指定時は200件で打ち切られる）から全件を取得する */
+  private async fetchAllXmlItems(
+    path: string,
+    itemKey: string,
+    params?: Record<string, string | number | boolean>
+  ): Promise<any[]> {
+    const pageSize = 1000;
+    const items: any[] = [];
+    for (;;) {
+      const entry = await this.fetchXml(path, { ...params, index: items.length, count: pageSize });
+      const page = toArray(entry?.items?.[itemKey]);
+      items.push(...page);
+      if (page.length === 0 || items.length >= num(entry?.total)) break;
+    }
+    return items;
+  }
+
   private async postForm(
     path: string,
     body: Record<string, string | number | boolean>,
@@ -245,11 +262,11 @@ export class EdcbClient {
   }
 
   async getEventsForService(onid: number, tsid: number, sid: number, basic = 1): Promise<EventInfo[]> {
-    const entry = await this.fetchXml('/api/EnumEventInfo', {
+    const events = await this.fetchAllXmlItems('/api/EnumEventInfo', 'eventinfo', {
       id: `${onid}-${tsid}-${sid}`,
       basic,
     });
-    return toArray(entry?.items?.eventinfo).map((e: any) => this.parseEventInfo(e));
+    return events.map((e: any) => this.parseEventInfo(e));
   }
 
   private parseEventInfo(e: any): EventInfo {
