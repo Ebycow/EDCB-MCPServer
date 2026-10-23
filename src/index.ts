@@ -459,7 +459,7 @@ server.registerTool('search_events', {
 
 // ---- 予約追加 ----
 server.registerTool('add_reserve', {
-  description: '番組の録画予約を追加します。EDCBのデフォルトプリセット設定で予約されます。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果 "[onid-tsid-sid-eid]" から取得してください。予約後はget_reservesで確認できます',
+  description: '番組の録画予約を追加します。EDCBのデフォルトプリセット設定で予約されます。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果 "[onid-tsid-sid-eid]" から取得してください。結果には追加した予約の日時・重複状態と、同じ時間帯の予約の件数（チューナー不足になった予約があればその一覧）を表示するため、重複確認のためにget_reservesを呼び直す必要はありません',
   inputSchema: {
     onid: z.number().describe('ネットワークID'),
     tsid: z.number().describe('トランスポートストリームID'),
@@ -468,14 +468,30 @@ server.registerTool('add_reserve', {
   },
 }, async ({ onid, tsid, sid, eid }) => {
   const reserveId = await client.addReserve(onid, tsid, sid, eid);
-  return {
-    content: [
-      {
-        type: 'text',
-        text: `予約を追加しました（予約ID: ${reserveId}、番組: ${onid}-${tsid}-${sid}-${eid}）`,
-      },
-    ],
-  };
+  const reserves = await client.getReserves();
+  // 古いAPIは予約IDを返さないことがあるため、番組IDでも探す
+  const added =
+    reserves.find((r) => reserveId !== 0 && r.id === reserveId) ??
+    reserves.find((r) => r.onid === onid && r.tsid === tsid && r.sid === sid && r.eid === eid);
+  if (!added) {
+    return {
+      content: [{ type: 'text', text: `予約を追加しました（予約ID: ${reserveId}、番組: ${onid}-${tsid}-${sid}-${eid}）。予約一覧から見つからなかったため、get_reservesで確認してください` }],
+    };
+  }
+
+  const end = (r: ReserveInfo) => r.starttime.getTime() + r.durationSec * 1000;
+  const sameTime = reserves
+    .filter((r) => r.id !== added.id && r.starttime.getTime() < end(added) && end(r) > added.starttime.getTime())
+    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime());
+  const conflicts = sameTime.filter((r) => r.overlapMode !== 0);
+
+  const lines = ['予約を追加しました', formatReserveLine(added, false)];
+  if (added.overlapMode !== 0) {
+    lines.push('⚠ この予約はチューナーが足りず、録画されないか一部のみの録画になります。優先度の変更や他の予約の無効化を検討してください');
+  }
+  lines.push('', `同じ時間帯の他の予約: ${sameTime.length}件（うち重複あり・録画しない: ${conflicts.length}件）`);
+  lines.push(...conflicts.map((r) => formatReserveLine(r, false)));
+  return { content: [{ type: 'text', text: lines.join('\n') }] };
 });
 
 // ---- 予約削除 ----
