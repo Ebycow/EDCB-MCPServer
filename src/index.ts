@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { EdcbClient } from './edcb-client.js';
+import { EdcbClient, EventInfo } from './edcb-client.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
 const EDCB_CACHE_SEC = Number(process.env.EDCB_CACHE_SEC ?? 180);
@@ -27,6 +27,41 @@ function parseJSTString(s: string): Date {
   const normalized = s.trim().replace(' ', 'T');
   if (/[+Z]/.test(normalized)) return new Date(normalized);
   return new Date(normalized + ':00+09:00');
+}
+
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+
+/** 開始と長さをJSTの "10/24(土) 09:00-11:54" 形式にする */
+function formatSpan(start: Date, durationSec: number): string {
+  const toJST = (d: Date) => new Date(d.getTime() + 9 * 3600 * 1000);
+  const hm = (d: Date) => `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  const s = toJST(start);
+  const e = toJST(new Date(start.getTime() + durationSec * 1000));
+  return `${s.getUTCMonth() + 1}/${s.getUTCDate()}(${WEEKDAYS[s.getUTCDay()]}) ${hm(s)}-${hm(e)}`;
+}
+
+/** 改行や連続した空白を詰めて、先頭maxLen文字にする */
+function summarize(text: string, maxLen: number): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > maxLen ? `${t.substring(0, maxLen)}…` : t;
+}
+
+/** 番組の出力。briefなら1行（日時・チャンネル・タイトル）、そうでなければジャンル・概要付き */
+function formatEvent(e: EventInfo, opts: { brief: boolean; showService: boolean }): string {
+  const id = `[${e.onid}-${e.tsid}-${e.sid}-${e.eid}]`;
+  if (opts.brief) {
+    return `${id} ${formatSpan(e.starttime, e.durationSec)} ${opts.showService ? `${e.service} ` : ''}${e.title}`;
+  }
+  const start = client.formatTime(e.starttime);
+  const dur = client.formatDuration(e.durationSec);
+  const genres = e.genre.map((g) => g.component_type_name).join(', ');
+  const service = opts.showService ? `\n  チャンネル: ${e.service}` : '';
+  return `${id} ${e.title}${service}\n  開始: ${start} (${dur})\n  ジャンル: ${genres || 'なし'}\n  概要: ${summarize(e.text, 80)}`;
+}
+
+/** 件数の表示。limitで切り詰めた場合は全体の件数も示す */
+function countLabel(total: number, shown: number): string {
+  return total > shown ? `${total}件中${shown}件を表示` : `${total}件`;
 }
 
 // ---- サーバー接続確認 ----
@@ -150,9 +185,10 @@ server.registerTool('get_epg', {
     sid: z.number().describe('サービスID（get_servicesで確認）'),
     from: z.string().optional().describe('この日時に放送中、またはこれ以降に始まる番組から表示（JST、形式: "YYYY-MM-DD HH:MM"、省略時は現在時刻）'),
     to: z.string().optional().describe('この日時までに始まる番組まで表示（JST、形式: "YYYY-MM-DD HH:MM"）'),
+    brief: z.boolean().optional().describe('trueで1件1行（日時・タイトルのみ）の簡易表示'),
     limit: z.number().optional().describe('最大件数（デフォルト30）'),
   },
-}, async ({ onid, tsid, sid, from, to, limit = 30 }) => {
+}, async ({ onid, tsid, sid, from, to, brief = false, limit = 30 }) => {
   const events = await client.getEventsForService(onid, tsid, sid, 1);
   if (events.length === 0) {
     return { content: [{ type: 'text', text: '番組情報がありません' }] };
@@ -162,28 +198,23 @@ server.registerTool('get_epg', {
   if (isNaN(fromTime.getTime()) || (toTime && isNaN(toTime.getTime()))) {
     return { content: [{ type: 'text', text: 'from/toは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
   }
-  const upcoming = events
+  const inRange = events
     .filter((e) => {
       const end = new Date(e.starttime.getTime() + e.durationSec * 1000);
       return end > fromTime && (!toTime || e.starttime <= toTime);
     })
-    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime())
-    .slice(0, limit);
-  if (upcoming.length === 0) {
+    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime());
+  if (inRange.length === 0) {
     return { content: [{ type: 'text', text: '指定された範囲の番組情報がありません' }] };
   }
+  const upcoming = inRange.slice(0, limit);
 
   const text = upcoming
-    .map((e) => {
-      const start = client.formatTime(e.starttime);
-      const dur = client.formatDuration(e.durationSec);
-      const genres = e.genre.map((g) => g.component_type_name).join(', ');
-      return `[${e.onid}-${e.tsid}-${e.sid}-${e.eid}] ${e.title}\n  開始: ${start} (${dur})\n  ジャンル: ${genres || 'なし'}\n  概要: ${e.text?.substring(0, 80) ?? ''}`;
-    })
-    .join('\n\n');
+    .map((e) => formatEvent(e, { brief, showService: false }))
+    .join(brief ? '\n' : '\n\n');
 
   return {
-    content: [{ type: 'text', text: `${upcoming.length}件の番組\n\n${text}` }],
+    content: [{ type: 'text', text: `${upcoming[0].service}の番組: ${countLabel(inRange.length, upcoming.length)}\n\n${text}` }],
   };
 });
 
@@ -241,9 +272,10 @@ server.registerTool('search_events', {
     tsid: z.number().optional().describe('チャンネルを絞り込む場合のTSID（get_servicesで確認）'),
     sid: z.number().optional().describe('チャンネルを絞り込む場合のサービスID（get_servicesで確認）'),
     includeOneSeg: z.boolean().optional().describe('ワンセグ（部分受信）サービスも検索対象に含める（デフォルトfalse。sid指定時は常に含める）'),
-    limit: z.number().optional().describe('最大件数（デフォルト50）'),
+    brief: z.boolean().optional().describe('trueで1件1行（日時・チャンネル・タイトルのみ）の簡易表示。多くの候補から絞り込むときに使います'),
+    limit: z.number().optional().describe('最大件数（デフォルト20）'),
   },
-}, async ({ keyword, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, limit = 50 }) => {
+}, async ({ keyword, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, brief = false, limit = 20 }) => {
   if (!keyword && !genreName && durationMin === undefined && durationMax === undefined && !startAfter && !startBefore) {
     return { content: [{ type: 'text', text: 'keyword、genreName、durationMin/durationMax、startAfter/startBefore のいずれかを指定してください' }] };
   }
@@ -301,21 +333,15 @@ server.registerTool('search_events', {
     results = results.filter((e) => e.starttime <= before);
   }
 
-  results = results.sort((a, b) => a.starttime.getTime() - b.starttime.getTime()).slice(0, limit);
-
   if (results.length === 0) {
     return { content: [{ type: 'text', text: '条件に一致する番組が見つかりませんでした' }] };
   }
-  const text = results
-    .map((e) => {
-      const start = client.formatTime(e.starttime);
-      const dur = client.formatDuration(e.durationSec);
-      const genres = e.genre.map((g) => g.component_type_name).join(', ');
-      return `[${e.onid}-${e.tsid}-${e.sid}-${e.eid}] ${e.title}\n  チャンネル: ${e.service}\n  開始: ${start} (${dur})\n  ジャンル: ${genres || 'なし'}\n  概要: ${e.text?.substring(0, 80) ?? ''}`;
-    })
-    .join('\n\n');
+  const shown = results.sort((a, b) => a.starttime.getTime() - b.starttime.getTime()).slice(0, limit);
+  const text = shown
+    .map((e) => formatEvent(e, { brief, showService: true }))
+    .join(brief ? '\n' : '\n\n');
   return {
-    content: [{ type: 'text', text: `${results.length}件の番組が見つかりました\n\n${text}` }],
+    content: [{ type: 'text', text: `条件に一致する番組: ${countLabel(results.length, shown.length)}\n\n${text}` }],
   };
 });
 
