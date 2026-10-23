@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { EdcbClient, EventInfo } from './edcb-client.js';
+import { EdcbClient, EventInfo, ReserveInfo } from './edcb-client.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
 const EDCB_CACHE_SEC = Number(process.env.EDCB_CACHE_SEC ?? 180);
@@ -137,16 +137,14 @@ server.registerTool('get_services', {
   };
 });
 
-// ---- 予約一覧 ----
-server.registerTool('get_reserves', {
-  description: '現在の録画予約一覧を取得します。delete_reserve・change_reserve・set_reserve_enabledで使う予約IDはここで確認します。状態が"録画しない"の場合はチューナー不足による重複です。"無効"はset_reserve_enabledで無効化された予約です。"EPGに番組なし"の警告は、番組差し替え等で予約対象の番組がEPGから消えていることを示します（同じ時間帯の番組をget_epgで確認してください）',
-  inputSchema: {},
-}, async () => {
-  const reserves = await client.getReserves();
-  if (reserves.length === 0) {
-    return { content: [{ type: 'text', text: '予約がありません' }] };
-  }
-  // 予約対象の番組がEPGに残っているか確認する（EPGを取得できなかったサービスは判定しない）
+// ---- 予約の表示 ----
+const OVERLAP_MODES = ['重複なし', '重複あり（一部のみ録画）', '録画しない（チューナー不足）'];
+const REC_MODES = ['全サービス', '指定サービス', '全サービス（デコードなし）', '指定サービス（デコードなし）', '視聴'];
+/** eid=0xFFFFはプログラム予約（番組に紐付かない） */
+const PROGRAM_RESERVE_EID = 0xffff;
+
+/** 予約対象の番組がEPGから消えている予約のIDを返す（EPGを取得できなかったサービスは判定しない） */
+async function findReservesMissingFromEpg(reserves: ReserveInfo[]): Promise<Set<number>> {
   const serviceKeys = [...new Set(reserves.map((r) => `${r.onid}-${r.tsid}-${r.sid}`))];
   const epgEids = new Map<string, Set<number>>();
   await Promise.all(
@@ -156,23 +154,87 @@ server.registerTool('get_reserves', {
       if (events) epgEids.set(key, new Set(events.map((e) => e.eid)));
     })
   );
+  return new Set(
+    reserves
+      .filter((r) => {
+        const eids = epgEids.get(`${r.onid}-${r.tsid}-${r.sid}`);
+        return r.eid !== PROGRAM_RESERVE_EID && eids !== undefined && !eids.has(r.eid);
+      })
+      .map((r) => r.id)
+  );
+}
 
-  const overlapModes = ['重複なし', '重複あり', '録画しない'];
+function formatMargin(r: ReserveInfo): string {
+  const rs = r.recSetting;
+  return rs.useMargineFlag ? `開始${rs.startMargine}秒前/終了${rs.endMargine}秒後` : '既定';
+}
+
+/** 1件1行の予約表示。通常と違う項目（重複・無効・録画モード・優先度・マージン・EPG警告）だけを末尾に付ける */
+function formatReserveLine(r: ReserveInfo, missingFromEpg: boolean): string {
+  const rs = r.recSetting;
+  const notes: string[] = [];
+  if (r.overlapMode !== 0) notes.push(`⚠${OVERLAP_MODES[r.overlapMode] ?? `重複状態${r.overlapMode}`}`);
+  if (missingFromEpg) notes.push('⚠EPGに番組なし（番組差し替えの可能性）');
+  if (!rs.recEnabled) notes.push('無効');
+  if (rs.recMode !== 1 && REC_MODES[rs.recMode]) notes.push(`録画モード:${REC_MODES[rs.recMode]}`);
+  if (rs.priority !== 2) notes.push(`優先度${rs.priority}`);
+  if (rs.useMargineFlag) notes.push(`マージン:${formatMargin(r)}`);
+  if (r.eid === PROGRAM_RESERVE_EID) notes.push('プログラム予約');
+  const eventId = `${r.onid}-${r.tsid}-${r.sid}-${r.eid}`;
+  return `[ID:${r.id}] ${formatSpan(r.starttime, r.durationSec)} ${r.service} ${r.title} (${eventId})${notes.length ? ` ／ ${notes.join(' ／ ')}` : ''}`;
+}
+
+/** 1件の予約の詳細表示 */
+function formatReserveDetail(r: ReserveInfo, missingFromEpg: boolean): string {
+  const rs = r.recSetting;
+  const folders = rs.recFolderList.map((f) => f.recFolder).filter(Boolean);
+  const lines = [
+    `[ID:${r.id}] ${r.title}`,
+    `チャンネル: ${r.service}`,
+    `日時: ${formatSpan(r.starttime, r.durationSec)} (${client.formatDuration(r.durationSec)})`,
+    `番組ID: ${r.onid}-${r.tsid}-${r.sid}-${r.eid}${r.eid === PROGRAM_RESERVE_EID ? '（プログラム予約）' : ''}`,
+    `重複状態: ${OVERLAP_MODES[r.overlapMode] ?? r.overlapMode}`,
+    `録画: ${rs.recEnabled ? '有効' : '無効'}  録画モード: ${REC_MODES[rs.recMode] ?? rs.recMode}  優先度: ${rs.priority}`,
+    `マージン: ${formatMargin(r)}  番組追従: ${rs.tuijyuuFlag ? 'する' : 'しない'}  ぴったり録画: ${rs.pittariFlag ? 'する' : 'しない'}`,
+    `録画フォルダ: ${folders.length ? folders.join(', ') : '既定'}`,
+  ];
+  if (r.comment) lines.push(`コメント: ${r.comment}`);
+  if (missingFromEpg) lines.push('⚠ EPGに番組なし（番組差し替えの可能性。同じ時間帯の番組をget_epgで確認してください）');
+  return lines.join('\n');
+}
+
+const RESERVE_LINE_LEGEND = '※表示のない項目は通常どおり: 重複なし・有効・録画モード=指定サービス・優先度2・マージン既定';
+
+// ---- 予約一覧 ----
+server.registerTool('get_reserves', {
+  description: [
+    '現在の録画予約一覧を取得します。delete_reserve・change_reserve・set_reserve_enabledで使う予約IDはここで確認します。',
+    '1件1行で "[ID:予約ID] 日時 チャンネル タイトル (onid-tsid-sid-eid)" の形式で表示し、通常と違う項目（重複・無効・録画モード・優先度・マージン）だけを末尾に付けます。',
+    '"録画しない"はチューナー不足による重複、"無効"はset_reserve_enabledで無効化された予約です。',
+    '"EPGに番組なし"の警告は、番組差し替え等で予約対象の番組がEPGから消えていることを示します（同じ時間帯の番組をget_epgで確認してください）。',
+    'idを指定すると、その予約の詳細（録画フォルダ・番組追従等）を表示します。',
+  ].join(' '),
+  inputSchema: {
+    id: z.number().optional().describe('詳細を表示する予約ID'),
+  },
+}, async ({ id }) => {
+  const reserves = await client.getReserves();
+  if (id !== undefined) {
+    const r = reserves.find((x) => x.id === id);
+    if (!r) return { content: [{ type: 'text', text: `予約ID ${id} が見つかりません` }] };
+    const missing = await findReservesMissingFromEpg([r]);
+    return { content: [{ type: 'text', text: formatReserveDetail(r, missing.has(r.id)) }] };
+  }
+  if (reserves.length === 0) {
+    return { content: [{ type: 'text', text: '予約がありません' }] };
+  }
+  const missing = await findReservesMissingFromEpg(reserves);
   const text = reserves
-    .map((r) => {
-      const start = client.formatTime(r.starttime);
-      const dur = client.formatDuration(r.durationSec);
-      const overlap = overlapModes[r.overlapMode] ?? String(r.overlapMode);
-      const enabled = r.recSetting.recEnabled ? '有効' : '無効';
-      // eid=0xFFFFはプログラム予約（番組に紐付かない）
-      const eids = epgEids.get(`${r.onid}-${r.tsid}-${r.sid}`);
-      const missing = r.eid !== 0xffff && eids && !eids.has(r.eid);
-      const warning = missing ? '\n  ⚠ EPGに番組なし（番組差し替えの可能性）' : '';
-      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  開始: ${start} (${dur})\n  状態: ${overlap}  優先度: ${r.recSetting.priority}  録画: ${enabled}${warning}`;
-    })
-    .join('\n\n');
+    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime())
+    .map((r) => formatReserveLine(r, missing.has(r.id)))
+    .join('\n');
   return {
-    content: [{ type: 'text', text: `予約数: ${reserves.length}\n\n${text}` }],
+    content: [{ type: 'text', text: `予約数: ${reserves.length}件\n${RESERVE_LINE_LEGEND}\n\n${text}` }],
   };
 });
 
