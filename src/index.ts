@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { EdcbClient } from './edcb-client.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
+const EDCB_CACHE_SEC = Number(process.env.EDCB_CACHE_SEC ?? 180);
 
-const client = new EdcbClient(EDCB_URL);
+const client = new EdcbClient(EDCB_URL, Number.isFinite(EDCB_CACHE_SEC) ? EDCB_CACHE_SEC : 180);
 const server = new McpServer({
   name: 'edcb-mcp',
   version: '1.0.0',
@@ -213,7 +214,7 @@ ${ev.text}`;
 server.registerTool('search_events', {
   description: [
     '番組を検索・絞り込みします。keyword・genreName・番組長・開始時刻のいずれか1つ以上を指定してください。複数指定した場合はAND条件です。',
-    '全サービスのEPGをクライアント側でフィルタするため、チャンネルを絞り込む場合はonid/tsid/sidを指定すると高速になります。',
+    '全サービスのEPGをクライアント側でフィルタします（番組表は数分間キャッシュされるため、2回目以降の検索は高速です）。',
     'onid/tsid/sidは一部だけの指定も可能で、指定した値に一致するチャンネルに絞り込みます（例: onidのみでそのネットワーク全体）。',
     'ワンセグ（部分受信）サービスは通常の放送と番組が重複するため、sidを指定しない限りデフォルトで除外します。含める場合はincludeOneSeg=trueを指定してください。',
     'ジャンル名はlist_genresツールで確認できます。大カテゴリ（例: "ドラマ"）でも小カテゴリ（例: "国内ドラマ"）でも部分一致で使えます。大カテゴリは検索範囲が広くなり、小カテゴリは絞り込みが強くなります。',

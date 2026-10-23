@@ -155,11 +155,29 @@ export class EdcbClient {
   private http: AxiosInstance;
   private baseUrl: string;
   private parser: xml2js.Parser;
+  private cacheTtlMs: number;
+  private cache = new Map<string, { expires: number; value: Promise<unknown> }>();
 
-  constructor(baseUrl: string) {
+  /** cacheTtlSec: チャンネル一覧・番組表を使い回す秒数（0で無効） */
+  constructor(baseUrl: string, cacheTtlSec = 180) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.http = axios.create({ baseURL: this.baseUrl, timeout: 15000 });
     this.parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: false });
+    this.cacheTtlMs = cacheTtlSec * 1000;
+  }
+
+  /** 同じキーの取得結果を一定時間使い回す（同時に来た要求も1回の取得にまとめる）。失敗した結果は残さない */
+  private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
+    if (this.cacheTtlMs <= 0) return load();
+    const now = Date.now();
+    const hit = this.cache.get(key);
+    if (hit && hit.expires > now) return hit.value as Promise<T>;
+    const value = load();
+    this.cache.set(key, { expires: now + this.cacheTtlMs, value });
+    value.catch(() => {
+      if (this.cache.get(key)?.value === value) this.cache.delete(key);
+    });
+    return value;
   }
 
   private async fetchXml(path: string, params?: Record<string, string | number | boolean>): Promise<any> {
@@ -223,6 +241,11 @@ export class EdcbClient {
   }
 
   async getServices(): Promise<ServiceInfo[]> {
+    const services = await this.cached('services', () => this.fetchServices());
+    return services.slice();
+  }
+
+  private async fetchServices(): Promise<ServiceInfo[]> {
     const entry = await this.fetchXml('/api/EnumService');
     return toArray(entry?.items?.serviceinfo).map((s: any) => ({
       onid: num(s.ONID),
@@ -265,11 +288,12 @@ export class EdcbClient {
   }
 
   async getEventsForService(onid: number, tsid: number, sid: number, basic = 1): Promise<EventInfo[]> {
-    const events = await this.fetchAllXmlItems('/api/EnumEventInfo', 'eventinfo', {
-      id: `${onid}-${tsid}-${sid}`,
-      basic,
+    const id = `${onid}-${tsid}-${sid}`;
+    const events = await this.cached(`events:${id}:${basic}`, async () => {
+      const items = await this.fetchAllXmlItems('/api/EnumEventInfo', 'eventinfo', { id, basic });
+      return items.map((e: any) => this.parseEventInfo(e));
     });
-    return events.map((e: any) => this.parseEventInfo(e));
+    return events.slice();
   }
 
   private parseEventInfo(e: any): EventInfo {
