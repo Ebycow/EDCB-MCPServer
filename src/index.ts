@@ -31,13 +31,15 @@ function parseJSTString(s: string): Date {
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
-/** 開始と長さをJSTの "10/24(土) 09:00-11:54" 形式にする */
+/** JSTの曜日（"土" など） */
+function weekdayJST(d: Date): string {
+  return WEEKDAYS[new Date(d.getTime() + 9 * 3600 * 1000).getUTCDay()];
+}
+
+/** 開始と長さをJSTの "2026-10-24 09:00-11:54 (土)" 形式にする（開始部分はツールの日時入力と同じ形式） */
 function formatSpan(start: Date, durationSec: number): string {
-  const toJST = (d: Date) => new Date(d.getTime() + 9 * 3600 * 1000);
-  const hm = (d: Date) => `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
-  const s = toJST(start);
-  const e = toJST(new Date(start.getTime() + durationSec * 1000));
-  return `${s.getUTCMonth() + 1}/${s.getUTCDate()}(${WEEKDAYS[s.getUTCDay()]}) ${hm(s)}-${hm(e)}`;
+  const end = client.formatTime(new Date(start.getTime() + durationSec * 1000)).slice(-5);
+  return `${client.formatTime(start)}-${end} (${weekdayJST(start)})`;
 }
 
 /** 改行や連続した空白を詰めて、先頭maxLen文字にする */
@@ -52,11 +54,10 @@ function formatEvent(e: EventInfo, opts: { brief: boolean; showService: boolean 
   if (opts.brief) {
     return `${id} ${formatSpan(e.starttime, e.durationSec)} ${opts.showService ? `${e.service} ` : ''}${e.title}`;
   }
-  const start = client.formatTime(e.starttime);
   const dur = client.formatDuration(e.durationSec);
   const genres = e.genre.map((g) => g.component_type_name).join(', ');
   const service = opts.showService ? `\n  チャンネル: ${e.service}` : '';
-  return `${id} ${e.title}${service}\n  開始: ${start} (${dur})\n  ジャンル: ${genres || 'なし'}\n  概要: ${summarize(e.text, 80)}`;
+  return `${id} ${e.title}${service}\n  日時: ${formatSpan(e.starttime, e.durationSec)} ${dur}\n  ジャンル: ${genres || 'なし'}\n  概要: ${summarize(e.text, 80)}`;
 }
 
 /** 件数の表示。limitで切り詰めた場合は全体の件数も示す */
@@ -191,7 +192,7 @@ function formatReserveDetail(r: ReserveInfo, missingFromEpg: boolean): string {
   const lines = [
     `[ID:${r.id}] ${r.title}`,
     `チャンネル: ${r.service}`,
-    `日時: ${formatSpan(r.starttime, r.durationSec)} (${client.formatDuration(r.durationSec)})`,
+    `日時: ${formatSpan(r.starttime, r.durationSec)} ${client.formatDuration(r.durationSec)}`,
     `番組ID: ${r.onid}-${r.tsid}-${r.sid}-${r.eid}${r.eid === PROGRAM_RESERVE_EID ? '（プログラム予約）' : ''}`,
     `重複状態: ${OVERLAP_MODES[r.overlapMode] ?? r.overlapMode}`,
     `録画: ${rs.recEnabled ? '有効' : '無効'}  録画モード: ${REC_MODES[rs.recMode] ?? rs.recMode}  優先度: ${rs.priority}`,
@@ -350,7 +351,7 @@ server.registerTool('get_event_info', {
   const genres = ev.genre.map((g) => g.component_type_name).join(', ');
   const text = `タイトル: ${ev.title}
 チャンネル: ${ev.service}
-開始: ${start}
+開始: ${start} (${weekdayJST(ev.starttime)})
 終了: ${end}
 時間: ${dur}
 ジャンル: ${genres || 'なし'}
@@ -435,13 +436,16 @@ server.registerTool('search_events', {
     results = results.filter((e) => e.durationSec <= durationMax * 60);
   }
 
-  if (startAfter) {
-    const after = parseJSTString(startAfter);
+  const after = startAfter ? parseJSTString(startAfter) : undefined;
+  const before = startBefore ? parseJSTString(startBefore) : undefined;
+  if ((after && isNaN(after.getTime())) || (before && isNaN(before.getTime()))) {
+    return { content: [{ type: 'text', text: 'startAfter/startBeforeは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
+  }
+  if (after) {
     results = results.filter((e) => e.starttime >= after);
   }
 
-  if (startBefore) {
-    const before = parseJSTString(startBefore);
+  if (before) {
     results = results.filter((e) => e.starttime <= before);
   }
 

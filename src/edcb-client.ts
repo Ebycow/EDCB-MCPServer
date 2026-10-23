@@ -495,8 +495,11 @@ export class EdcbClient {
     });
   }
 
+  /** JSTの "YYYY-MM-DD HH:MM" 形式（ツールの日時入力と同じ形式）にする */
   formatTime(date: Date): string {
-    return date.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+    const jst = new Date(date.getTime() + 9 * 3600 * 1000);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${jst.getUTCFullYear()}-${p(jst.getUTCMonth() + 1)}-${p(jst.getUTCDate())} ${p(jst.getUTCHours())}:${p(jst.getUTCMinutes())}`;
   }
 
   formatDuration(seconds: number): string {
