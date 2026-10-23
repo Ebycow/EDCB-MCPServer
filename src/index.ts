@@ -16,6 +16,11 @@ function isTerrestrial(onid: number): boolean {
   return onid >= 0x7880;
 }
 
+/** 検索用に正規化する（NFKCで全角英数字・半角カナ等を統一し、小文字化） */
+function normalizeForSearch(s: string): string {
+  return s.normalize('NFKC').toLowerCase();
+}
+
 /** "YYYY-MM-DD HH:MM" または "YYYY-MM-DDTHH:MM" 形式をJSTとして解釈してDateを返す */
 function parseJSTString(s: string): Date {
   const normalized = s.trim().replace(' ', 'T');
@@ -239,13 +244,13 @@ server.registerTool('search_events', {
   let results = allEvents;
 
   if (keyword) {
-    const kw = keyword.toLowerCase();
-    results = results.filter((e) => e.title.toLowerCase().includes(kw) || e.text.toLowerCase().includes(kw));
+    const kw = normalizeForSearch(keyword);
+    results = results.filter((e) => normalizeForSearch(e.title).includes(kw) || normalizeForSearch(e.text).includes(kw));
   }
 
   if (genreName) {
-    const gn = genreName.toLowerCase();
-    results = results.filter((e) => e.genre.some((g) => g.component_type_name.toLowerCase().includes(gn)));
+    const gn = normalizeForSearch(genreName);
+    results = results.filter((e) => e.genre.some((g) => normalizeForSearch(g.component_type_name).includes(gn)));
   }
 
   if (durationMin !== undefined) {
