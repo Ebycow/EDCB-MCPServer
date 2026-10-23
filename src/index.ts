@@ -144,6 +144,7 @@ server.registerTool('get_epg', {
       const end = new Date(e.starttime.getTime() + e.durationSec * 1000);
       return end > now;
     })
+    .sort((a, b) => a.starttime.getTime() - b.starttime.getTime())
     .slice(0, limit);
 
   const text = upcoming
@@ -271,7 +272,7 @@ server.registerTool('search_events', {
     results = results.filter((e) => e.starttime <= before);
   }
 
-  results = results.slice(0, limit);
+  results = results.sort((a, b) => a.starttime.getTime() - b.starttime.getTime()).slice(0, limit);
 
   if (results.length === 0) {
     return { content: [{ type: 'text', text: '条件に一致する番組が見つかりませんでした' }] };
