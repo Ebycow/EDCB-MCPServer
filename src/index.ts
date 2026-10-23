@@ -143,26 +143,35 @@ server.registerTool('get_reserves', {
 
 // ---- 番組EPG取得（特定チャンネル）----
 server.registerTool('get_epg', {
-  description: '特定チャンネルの今後の番組表（EPG）を取得します。onid/tsid/sidはget_servicesで確認してください。add_reserveに必要なeidはここで確認します。結果は "[onid-tsid-sid-eid] タイトル" の形式で表示されます',
+  description: '特定チャンネルの番組表（EPG）を取得します。onid/tsid/sidはget_servicesで確認してください。add_reserveに必要なeidはここで確認します。from/toで日時範囲を指定でき、省略時は現在放送中の番組から表示します。結果は "[onid-tsid-sid-eid] タイトル" の形式で表示されます',
   inputSchema: {
     onid: z.number().describe('ネットワークID（get_servicesで確認）'),
     tsid: z.number().describe('トランスポートストリームID（get_servicesで確認）'),
     sid: z.number().describe('サービスID（get_servicesで確認）'),
+    from: z.string().optional().describe('この日時に放送中、またはこれ以降に始まる番組から表示（JST、形式: "YYYY-MM-DD HH:MM"、省略時は現在時刻）'),
+    to: z.string().optional().describe('この日時までに始まる番組まで表示（JST、形式: "YYYY-MM-DD HH:MM"）'),
     limit: z.number().optional().describe('最大件数（デフォルト30）'),
   },
-}, async ({ onid, tsid, sid, limit = 30 }) => {
+}, async ({ onid, tsid, sid, from, to, limit = 30 }) => {
   const events = await client.getEventsForService(onid, tsid, sid, 1);
   if (events.length === 0) {
     return { content: [{ type: 'text', text: '番組情報がありません' }] };
   }
-  const now = new Date();
+  const fromTime = from ? parseJSTString(from) : new Date();
+  const toTime = to ? parseJSTString(to) : undefined;
+  if (isNaN(fromTime.getTime()) || (toTime && isNaN(toTime.getTime()))) {
+    return { content: [{ type: 'text', text: 'from/toは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
+  }
   const upcoming = events
     .filter((e) => {
       const end = new Date(e.starttime.getTime() + e.durationSec * 1000);
-      return end > now;
+      return end > fromTime && (!toTime || e.starttime <= toTime);
     })
     .sort((a, b) => a.starttime.getTime() - b.starttime.getTime())
     .slice(0, limit);
+  if (upcoming.length === 0) {
+    return { content: [{ type: 'text', text: '指定された範囲の番組情報がありません' }] };
+  }
 
   const text = upcoming
     .map((e) => {
