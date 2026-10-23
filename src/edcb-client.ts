@@ -61,6 +61,7 @@ export interface EventInfo {
   starttime: Date;
   durationSec: number;
   text: string;
+  /** trueでスクランブル（有料）、falseで無料放送 */
   freeCAFlag: boolean;
   genre: Array<{ nibble1: number; nibble2: number; component_type_name: string }>;
 }

@@ -184,7 +184,7 @@ server.registerTool('get_event_info', {
 終了: ${end}
 時間: ${dur}
 ジャンル: ${genres || 'なし'}
-無料放送: ${ev.freeCAFlag ? 'はい' : 'いいえ'}
+無料放送: ${ev.freeCAFlag ? 'いいえ' : 'はい'}
 番組ID: ${ev.onid}-${ev.tsid}-${ev.sid}-${ev.eid}
 
 【番組説明】
