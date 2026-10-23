@@ -97,6 +97,18 @@ export interface AutoAddInfo {
   recSetting: RecSetting;
 }
 
+/** EDCB（EMWUI）が<err>で返したエラー */
+export class EdcbError extends Error {
+  constructor(readonly detail: string) {
+    super(`EDCB Error: ${detail}`);
+  }
+
+  /** 番組・チャンネルの番組表が見つからないときのエラーか（EDCBは原因を区別せずこのメッセージを返す） */
+  get isEpgNotFound(): boolean {
+    return this.detail.includes('EPGデータを読み込み中、または存在しません');
+  }
+}
+
 function parseDate(startDate: string, startTime: string): Date {
   const dateStr = `${startDate.replace(/\//g, '-')}T${startTime}+09:00`;
   return new Date(dateStr);
@@ -186,7 +198,7 @@ export class EdcbClient {
     const entry = result?.entry;
     if (entry?.err) {
       const err = Array.isArray(entry.err) ? entry.err.join(': ') : entry.err;
-      throw new Error(`EDCB Error: ${err}`);
+      throw new EdcbError(err);
     }
     return entry;
   }
@@ -228,7 +240,7 @@ export class EdcbClient {
     const entry = result?.entry;
     if (entry?.err) {
       const errs = toArray(entry.err);
-      throw new Error(`EDCB Error: ${errs.join(': ')}`);
+      throw new EdcbError(errs.join(': '));
     }
     return entry;
   }
@@ -277,10 +289,14 @@ export class EdcbClient {
     }));
   }
 
+  /** 番組が見つからないときはnullを返す */
   async getEventInfo(onid: number, tsid: number, sid: number, eid: number): Promise<EventInfo | null> {
     const entry = await this.fetchXml('/api/EnumEventInfo', {
       id: `${onid}-${tsid}-${sid}-${eid}`,
       basic: 0,
+    }).catch((e) => {
+      if (e instanceof EdcbError && e.isEpgNotFound) return null;
+      throw e;
     });
     const events = toArray(entry?.items?.eventinfo);
     if (events.length === 0) return null;

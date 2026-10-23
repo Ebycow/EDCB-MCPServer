@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { EdcbClient, EventInfo, ReserveInfo } from './edcb-client.js';
+import { EdcbClient, EdcbError, EventInfo, ReserveInfo } from './edcb-client.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
 const EDCB_CACHE_SEC = Number(process.env.EDCB_CACHE_SEC ?? 180);
@@ -63,6 +63,19 @@ function formatEvent(e: EventInfo, opts: { brief: boolean; showService: boolean 
 /** 件数の表示。limitで切り詰めた場合は全体の件数も示す */
 function countLabel(total: number, shown: number): string {
   return total > shown ? `${total}件中${shown}件を表示` : `${total}件`;
+}
+
+/**
+ * チャンネルの番組表が取得できない理由を説明する。
+ * EDCBは原因によらず「EPGデータを読み込み中、または存在しません」としか返さないため、チャンネル一覧と照らし合わせる
+ */
+async function explainServiceWithoutEpg(onid: number, tsid: number, sid: number): Promise<string> {
+  const id = `${onid}-${tsid}-${sid}`;
+  const service = (await client.getServices()).find((s) => s.onid === onid && s.tsid === tsid && s.sid === sid);
+  if (!service) {
+    return `チャンネル ${id} はEDCBのチャンネル一覧にありません。onid/tsid/sidをget_servicesで確認してください`;
+  }
+  return `チャンネル ${id}（${service.service_name}）の番組表がEDCBにありません。EPGをまだ取得していないか、番組情報を送っていないチャンネルの可能性があります`;
 }
 
 // ---- サーバー接続確認 ----
@@ -302,9 +315,12 @@ server.registerTool('get_epg', {
     limit: z.number().optional().describe('最大件数（デフォルト30）'),
   },
 }, async ({ onid, tsid, sid, from, to, brief = false, limit = 30 }) => {
-  const events = await client.getEventsForService(onid, tsid, sid, 1);
+  const events = await client.getEventsForService(onid, tsid, sid, 1).catch((e) => {
+    if (e instanceof EdcbError && e.isEpgNotFound) return [];
+    throw e;
+  });
   if (events.length === 0) {
-    return { content: [{ type: 'text', text: '番組情報がありません' }] };
+    return { content: [{ type: 'text', text: await explainServiceWithoutEpg(onid, tsid, sid) }] };
   }
   const fromTime = from ? parseJSTString(from) : new Date();
   const toTime = to ? parseJSTString(to) : undefined;
@@ -343,7 +359,16 @@ server.registerTool('get_event_info', {
 }, async ({ onid, tsid, sid, eid }) => {
   const ev = await client.getEventInfo(onid, tsid, sid, eid);
   if (!ev) {
-    return { content: [{ type: 'text', text: '番組情報が見つかりませんでした' }] };
+    const serviceEvents = await client.getEventsForService(onid, tsid, sid, 1).catch(() => []);
+    if (serviceEvents.length === 0) {
+      return { content: [{ type: 'text', text: `番組ID ${onid}-${tsid}-${sid}-${eid} が見つかりません。${await explainServiceWithoutEpg(onid, tsid, sid)}` }] };
+    }
+    return {
+      content: [{
+        type: 'text',
+        text: `番組ID ${onid}-${tsid}-${sid}-${eid} はこのチャンネル（${serviceEvents[0].service}）の番組表にありません。番組の差し替えで削除されたか、放送が終わった可能性があります。同じ時間帯の番組はget_epgのfrom/toで確認してください`,
+      }],
+    };
   }
   const start = client.formatTime(ev.starttime);
   const end = client.formatTime(new Date(ev.starttime.getTime() + ev.durationSec * 1000));
