@@ -6,6 +6,8 @@ export interface ServiceInfo {
   tsid: number;
   sid: number;
   service_type: number;
+  /** 部分受信サービス（ワンセグ）かどうか */
+  partialReceptionFlag: boolean;
   service_name: string;
   network_name: string;
   remote_control_key_id: number;
@@ -227,6 +229,7 @@ export class EdcbClient {
       tsid: num(s.TSID),
       sid: num(s.SID),
       service_type: num(s.service_type),
+      partialReceptionFlag: bool(s.partialReceptionFlag),
       service_name: str(s.service_name),
       network_name: str(s.network_name),
       remote_control_key_id: num(s.remote_control_key_id),

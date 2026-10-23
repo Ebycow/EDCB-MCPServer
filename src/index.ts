@@ -92,7 +92,8 @@ server.registerTool('get_services', {
   const text = filtered
     .map((s) => {
       const networkType = isTerrestrial(s.onid) ? `地上波(${s.network_name})` : s.network_name;
-      return `[${s.remote_control_key_id}ch] ${s.service_name} (${s.onid}-${s.tsid}-${s.sid}) - ${networkType}`;
+      const oneSeg = s.partialReceptionFlag ? ' [ワンセグ]' : '';
+      return `[${s.remote_control_key_id}ch] ${s.service_name} (${s.onid}-${s.tsid}-${s.sid}) - ${networkType}${oneSeg}`;
     })
     .join('\n');
   return {
@@ -214,6 +215,7 @@ server.registerTool('search_events', {
     '番組を検索・絞り込みします。keyword・genreName・番組長・開始時刻のいずれか1つ以上を指定してください。複数指定した場合はAND条件です。',
     '全サービスのEPGをクライアント側でフィルタするため、チャンネルを絞り込む場合はonid/tsid/sidを指定すると高速になります。',
     'onid/tsid/sidは一部だけの指定も可能で、指定した値に一致するチャンネルに絞り込みます（例: onidのみでそのネットワーク全体）。',
+    'ワンセグ（部分受信）サービスは通常の放送と番組が重複するため、sidを指定しない限りデフォルトで除外します。含める場合はincludeOneSeg=trueを指定してください。',
     'ジャンル名はlist_genresツールで確認できます。大カテゴリ（例: "ドラマ"）でも小カテゴリ（例: "国内ドラマ"）でも部分一致で使えます。大カテゴリは検索範囲が広くなり、小カテゴリは絞り込みが強くなります。',
     '開始時刻は日本時間(JST)で "YYYY-MM-DD HH:MM" 形式で指定します。',
     '出力形式: "[onid-tsid-sid-eid] タイトル"。onid=オリジナルネットワークID、tsid=トランスポートストリームID、sid=サービスID、eid=イベントID(番組固有ID)。番組識別にはこの4つの値が必要です。',
@@ -228,9 +230,10 @@ server.registerTool('search_events', {
     onid: z.number().optional().describe('チャンネルを絞り込む場合のネットワークID（get_servicesで確認）'),
     tsid: z.number().optional().describe('チャンネルを絞り込む場合のTSID（get_servicesで確認）'),
     sid: z.number().optional().describe('チャンネルを絞り込む場合のサービスID（get_servicesで確認）'),
+    includeOneSeg: z.boolean().optional().describe('ワンセグ（部分受信）サービスも検索対象に含める（デフォルトfalse。sid指定時は常に含める）'),
     limit: z.number().optional().describe('最大件数（デフォルト50）'),
   },
-}, async ({ keyword, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, limit = 50 }) => {
+}, async ({ keyword, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, limit = 50 }) => {
   if (!keyword && !genreName && durationMin === undefined && durationMax === undefined && !startAfter && !startBefore) {
     return { content: [{ type: 'text', text: 'keyword、genreName、durationMin/durationMax、startAfter/startBefore のいずれかを指定してください' }] };
   }
@@ -243,7 +246,8 @@ server.registerTool('search_events', {
       (s) =>
         (onid === undefined || s.onid === onid) &&
         (tsid === undefined || s.tsid === tsid) &&
-        (sid === undefined || s.sid === sid)
+        (sid === undefined || s.sid === sid) &&
+        (includeOneSeg || sid !== undefined || !s.partialReceptionFlag)
     );
     if (services.length === 0) {
       const spec = [`onid=${onid ?? '*'}`, `tsid=${tsid ?? '*'}`, `sid=${sid ?? '*'}`].join(', ');
