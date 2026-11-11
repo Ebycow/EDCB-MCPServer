@@ -569,12 +569,15 @@ server.registerTool('change_reserve', {
   };
 });
 
+/** 録画結果が正常終了（EDCBのREC_END_STATUS_NORMAL） */
+const REC_END_STATUS_NORMAL = 1;
+
 /** get_rec_infoで表示する最大件数（新しい順） */
 const REC_INFO_LIMIT = 200;
 
 // ---- 録画済み番組一覧 ----
 server.registerTool('get_rec_info', {
-  description: '録画済み番組の一覧を取得します。録画ファイルパス・ドロップ数・録画状態を確認できます。状態: 録画終了=正常, 録画中断=途中停止, 録画失敗=エラー',
+  description: '録画済み番組の一覧を取得します。録画ファイルパス・ドロップ数・スクランブル数・録画結果を確認できます。録画結果はEDCBの説明文（正常なら「録画終了」）で表示し、正常に終わらなかった録画には⚠を付けます',
   inputSchema: {
     id: z.number().optional().describe('特定の録画IDを指定（省略時は新しい順に最大200件）'),
   },
@@ -584,19 +587,14 @@ server.registerTool('get_rec_info', {
   if (infos.length === 0) {
     return { content: [{ type: 'text', text: '録画済み番組がありません' }] };
   }
-  const recStatusLabels: Record<number, string> = {
-    1: '録画終了',
-    2: '録画中断',
-    3: '録画失敗',
-    9: '情報なし',
-  };
   const text = infos
     .map((r) => {
       const start = client.formatTime(r.starttime);
       const dur = client.formatDuration(r.durationSec);
-      const status = recStatusLabels[r.recStatus] ?? `状態${r.recStatus}`;
+      const status = r.recStatus === REC_END_STATUS_NORMAL ? r.comment : `⚠${r.comment || `録画結果${r.recStatus}`}`;
       const dropInfo = r.drops > 0 ? ` ドロップ:${r.drops}` : '';
-      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  録画: ${start} (${dur}) ${status}${dropInfo}\n  ファイル: ${r.recFilePath}`;
+      const scrambleInfo = r.scrambles > 0 ? ` スクランブル:${r.scrambles}` : '';
+      return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  録画: ${start} (${dur}) ${status}${dropInfo}${scrambleInfo}\n  ファイル: ${r.recFilePath}`;
     })
     .join('\n\n');
   return {
