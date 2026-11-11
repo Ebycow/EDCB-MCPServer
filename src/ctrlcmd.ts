@@ -186,7 +186,10 @@ export class CtrlCmdClient {
   constructor(
     readonly host: string,
     readonly port: number,
-    private readonly timeoutMs = 15000
+    /** 応答を待つ時間（データが届かない時間） */
+    private readonly timeoutMs = 15000,
+    /** 接続を待つ時間 */
+    private readonly connectTimeoutMs = 5000
   ) {}
 
   /** コマンドを送り、結果のデータを返す。CMD_SUCCESS以外ならCtrlCmdErrorを投げる */
@@ -196,9 +199,14 @@ export class CtrlCmdClient {
       let received = 0;
       let settled = false;
       const socket = net.connect(this.port, this.host);
+      const connectTimer = setTimeout(
+        () => finish(new Error(`EDCB（${this.host}:${this.port}）にTCPで接続できません: 接続がタイムアウトしました`)),
+        this.connectTimeoutMs
+      );
       const finish = (err: Error | null, data?: Buffer) => {
         if (settled) return;
         settled = true;
+        clearTimeout(connectTimer);
         socket.destroy();
         if (err) reject(err);
         else resolve(data!);
@@ -216,6 +224,7 @@ export class CtrlCmdClient {
       socket.setTimeout(this.timeoutMs, () =>
         finish(new Error(`EDCB（${this.host}:${this.port}）からの応答がタイムアウトしました（コマンド${command}）`))
       );
+      socket.on('connect', () => clearTimeout(connectTimer));
       socket.on('connect', () => socket.write(Buffer.concat([u32(command), u32(payload.length), payload])));
       socket.on('data', (d: Buffer) => {
         chunks.push(d);
