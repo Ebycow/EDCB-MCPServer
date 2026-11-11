@@ -482,8 +482,9 @@ export class EdcbClient {
   }
 
   async deleteReserve(id: number): Promise<void> {
-    const ctok = await this.getCsrfToken();
-    await this.postForm('/api/SetReserve', { ctok, del: 1 }, { id });
+    // EDCBは存在しない予約IDの削除も成功として返すため、先に存在を確かめる
+    await this.getReserveData(id);
+    await this.ctrl.send(CMD.DEL_RESERVE, vec([u32(id)]));
   }
 
   /** 予約の現在の内容。見つからなければエラー */
