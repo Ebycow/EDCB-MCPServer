@@ -6,12 +6,14 @@ import {
   EpgEventInfo,
   enumPgInfoExParam,
   eventKey,
+  RecFileInfo,
   RecSettingData,
   ReserveData,
   getRecMode,
   isNoRec,
   makeRecMode,
   readEventInfo,
+  readRecFileInfo,
   readReserveData,
   readServiceEventInfo,
   readServiceInfo,
@@ -541,27 +543,37 @@ export class EdcbClient {
     await this.putReserveData(data);
   }
 
+  /** 録画済み番組の一覧（開始時刻の新しい順）。idを指定するとその1件だけ */
   async getRecInfo(id?: number): Promise<RecInfo[]> {
-    const params: Record<string, number> = {};
-    if (id !== undefined) params['id'] = id;
-    const entry = await this.fetchXml('/api/EnumRecInfo', params);
-    return toArray(entry?.items?.recinfo).map((r: any) => ({
-      id: num(r.ID),
-      title: str(r.title),
-      starttime: parseDate(str(r.startDate), str(r.startTime)),
-      durationSec: num(r.duration),
-      service: str(r.service_name),
-      onid: num(r.ONID),
-      tsid: num(r.TSID),
-      sid: num(r.SID),
-      eid: num(r.eventID),
-      recFilePath: str(r.recFilePath),
-      comment: str(r.comment),
-      drops: num(r.drops),
-      scrambles: num(r.scrambles),
-      protect: bool(r.protect),
-      recStatus: num(r.recStatus),
-    }));
+    let list: RecFileInfo[];
+    if (id === undefined) {
+      list = (await this.ctrl.sendVersioned(CMD.ENUM_RECINFO_BASIC2)).vec(readRecFileInfo);
+    } else {
+      const r = await this.ctrl.sendVersioned(CMD.GET_RECINFO2, u32(id)).catch((e) => {
+        if (e instanceof CtrlCmdError && e.isNotFound) return null;
+        throw e;
+      });
+      list = r ? [readRecFileInfo(r)] : [];
+    }
+    return list
+      .map((x) => ({
+        id: x.id,
+        title: x.title,
+        starttime: systemTimeToDate(x.startTime),
+        durationSec: x.durationSecond,
+        service: x.serviceName,
+        onid: x.onid,
+        tsid: x.tsid,
+        sid: x.sid,
+        eid: x.eid,
+        recFilePath: x.recFilePath,
+        comment: x.comment,
+        drops: Number(x.drops),
+        scrambles: Number(x.scrambles),
+        protect: x.protectFlag,
+        recStatus: x.recStatus,
+      }))
+      .sort((a, b) => b.starttime.getTime() - a.starttime.getTime() || a.id - b.id);
   }
 
   async getAutoAdd(): Promise<AutoAddInfo[]> {

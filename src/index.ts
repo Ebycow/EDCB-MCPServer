@@ -569,14 +569,18 @@ server.registerTool('change_reserve', {
   };
 });
 
+/** get_rec_infoで表示する最大件数（新しい順） */
+const REC_INFO_LIMIT = 200;
+
 // ---- 録画済み番組一覧 ----
 server.registerTool('get_rec_info', {
   description: '録画済み番組の一覧を取得します。録画ファイルパス・ドロップ数・録画状態を確認できます。状態: 録画終了=正常, 録画中断=途中停止, 録画失敗=エラー',
   inputSchema: {
-    id: z.number().optional().describe('特定の録画IDを指定（省略時は全件、最大200件）'),
+    id: z.number().optional().describe('特定の録画IDを指定（省略時は新しい順に最大200件）'),
   },
 }, async ({ id }) => {
-  const infos = await client.getRecInfo(id);
+  const all = await client.getRecInfo(id);
+  const infos = all.slice(0, REC_INFO_LIMIT);
   if (infos.length === 0) {
     return { content: [{ type: 'text', text: '録画済み番組がありません' }] };
   }
@@ -596,7 +600,7 @@ server.registerTool('get_rec_info', {
     })
     .join('\n\n');
   return {
-    content: [{ type: 'text', text: `録画済み番組数: ${infos.length}\n\n${text}` }],
+    content: [{ type: 'text', text: `録画済み番組数: ${countLabel(all.length, infos.length)}\n\n${text}` }],
   };
 });
 

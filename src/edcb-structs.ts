@@ -9,6 +9,8 @@ export const CMD = {
   ENUM_RESERVE2: 2011,
   GET_RESERVE2: 2012,
   CHG_RESERVE2: 2015,
+  ENUM_RECINFO_BASIC2: 2020,
+  GET_RECINFO2: 2024,
   DEL_RESERVE: 1014,
   ENUM_SERVICE: 1021,
   GET_PG_INFO: 1023,
@@ -330,4 +332,49 @@ export function readReserveData(r: Reader): ReserveData {
       recFileNameList,
     };
   });
+}
+
+/** REC_FILE_INFO（CMD_VER 4以降の形式。ENUM_RECINFO_BASIC2ではprogramInfo・errInfoは空） */
+export interface RecFileInfo {
+  id: number;
+  recFilePath: string;
+  title: string;
+  startTime: SystemTime;
+  durationSecond: number;
+  serviceName: string;
+  onid: number;
+  tsid: number;
+  sid: number;
+  eid: number;
+  drops: bigint;
+  scrambles: bigint;
+  recStatus: number;
+  startTimeEpg: SystemTime;
+  comment: string;
+  programInfo: string;
+  errInfo: string;
+  protectFlag: boolean;
+}
+
+export function readRecFileInfo(r: Reader): RecFileInfo {
+  return r.struct((s) => ({
+    id: s.u32(),
+    recFilePath: s.wstr(),
+    title: s.wstr(),
+    startTime: s.systemTime(),
+    durationSecond: s.u32(),
+    serviceName: s.wstr(),
+    onid: s.u16(),
+    tsid: s.u16(),
+    sid: s.u16(),
+    eid: s.u16(),
+    drops: s.i64(),
+    scrambles: s.i64(),
+    recStatus: s.u32(),
+    startTimeEpg: s.systemTime(),
+    comment: s.wstr(),
+    programInfo: s.wstr(),
+    errInfo: s.wstr(),
+    protectFlag: s.done ? false : s.u8() !== 0,
+  }));
 }
