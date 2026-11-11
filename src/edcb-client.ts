@@ -1,10 +1,11 @@
 import axios, { AxiosInstance } from 'axios';
 import * as xml2js from 'xml2js';
-import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, systemTimeToDate, toEdcbTime, vec } from './ctrlcmd.js';
+import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, i64, systemTimeToDate, toEdcbTime, vec } from './ctrlcmd.js';
 import {
   CMD,
   EpgEventInfo,
   enumPgInfoExParam,
+  eventKey,
   readEventInfo,
   readServiceEventInfo,
   readServiceInfo,
@@ -338,16 +339,13 @@ export class EdcbClient {
 
   /** 番組が見つからないときはnullを返す */
   async getEventInfo(onid: number, tsid: number, sid: number, eid: number): Promise<EventInfo | null> {
-    const entry = await this.fetchXml('/api/EnumEventInfo', {
-      id: `${onid}-${tsid}-${sid}-${eid}`,
-      basic: 0,
-    }).catch((e) => {
-      if (e instanceof EdcbError && e.isEpgNotFound) return null;
+    const data = await this.ctrl.send(CMD.GET_PG_INFO, i64(eventKey(onid, tsid, sid, eid))).catch((e) => {
+      if (e instanceof CtrlCmdError && e.isNotFound) return null;
       throw e;
     });
-    const events = toArray(entry?.items?.eventinfo);
-    if (events.length === 0) return null;
-    return this.parseEventInfo(events[0]);
+    if (!data) return null;
+    const service = (await this.getServices()).find((s) => s.onid === onid && s.tsid === tsid && s.sid === sid);
+    return toEventInfo(readEventInfo(new Reader(data)), service?.service_name ?? '');
   }
 
   /** 1チャンネルの番組表。番組表がないチャンネルは空配列を返す */

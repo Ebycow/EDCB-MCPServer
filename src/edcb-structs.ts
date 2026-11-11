@@ -7,9 +7,15 @@ import { Reader, SystemTime, i32, i64, struct, u8, vec, wstr } from './ctrlcmd.j
 /** コマンド番号（EDCBの Common/CtrlCmdDef.h） */
 export const CMD = {
   ENUM_SERVICE: 1021,
+  GET_PG_INFO: 1023,
   SEARCH_PG: 1025,
   ENUM_PG_INFO_EX: 1029,
 } as const;
+
+/** 番組のキー（onid<<48 | tsid<<32 | sid<<16 | eid） */
+export function eventKey(onid: number, tsid: number, sid: number, eid: number): bigint {
+  return (serviceKey(onid, tsid, sid) << 16n) | BigInt(eid);
+}
 
 /** サービスのキー（onid<<32 | tsid<<16 | sid） */
 export function serviceKey(onid: number, tsid: number, sid: number): bigint {
