@@ -91,13 +91,20 @@ async function explainServiceWithoutEpg(onid: number, tsid: number, sid: number)
 
 // ---- サーバー接続確認 ----
 server.registerTool('ping', {
-  description: 'EDCBサーバーへの接続確認。認識済みチャンネル数を返します。他のツールが失敗するときにまず実行してください',
+  description:
+    'EDCBサーバーへの接続確認。TCP接続（番組表・予約一覧など、ほとんどのツールで使用）とHTTP接続（add_reserveで使用）を確認し、認識済みチャンネル数を返します。他のツールが失敗するときにまず実行してください',
   inputSchema: {},
 }, async () => {
-  const services = await client.getServices();
-  return {
-    content: [{ type: 'text', text: `EDCBサーバーに接続成功。チャンネル数: ${services.length}` }],
-  };
+  const [tcp, http] = await Promise.allSettled([client.getServices(), client.getCsrfToken()]);
+  const lines = [
+    tcp.status === 'fulfilled'
+      ? `TCP接続（${client.tcpEndpoint}）: 成功。チャンネル数: ${tcp.value.length}`
+      : `TCP接続（${client.tcpEndpoint}）: 失敗 — ${tcp.reason instanceof Error ? tcp.reason.message : tcp.reason}。EDCBの設定でTCP接続（ネットワーク接続）が有効か、接続元が許可されているか確認してください`,
+    http.status === 'fulfilled'
+      ? `HTTP接続（${client.httpUrl}）: 成功`
+      : `HTTP接続（${client.httpUrl}）: 失敗 — ${http.reason instanceof Error ? http.reason.message : http.reason}。add_reserve以外のツールは使えます`,
+  ];
+  return { content: [{ type: 'text', text: lines.join('\n') }], isError: tcp.status === 'rejected' };
 });
 
 // ---- ジャンル一覧 ----

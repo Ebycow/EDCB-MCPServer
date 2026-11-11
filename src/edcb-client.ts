@@ -248,6 +248,11 @@ export class EdcbClient {
     this.cacheTtlMs = cacheTtlSec * 1000;
   }
 
+  /** HTTP接続（Material WebUI）のURL */
+  get httpUrl(): string {
+    return this.baseUrl;
+  }
+
   /** TCP接続（CtrlCmd）の接続先（"host:port"） */
   get tcpEndpoint(): string {
     return `${this.ctrl.host}:${this.ctrl.port}`;
