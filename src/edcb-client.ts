@@ -6,7 +6,12 @@ import {
   EpgEventInfo,
   enumPgInfoExParam,
   eventKey,
+  RecSettingData,
+  ReserveData,
+  getRecMode,
+  isNoRec,
   readEventInfo,
+  readReserveData,
   readServiceEventInfo,
   readServiceInfo,
   searchKeyInfo,
@@ -200,6 +205,48 @@ export interface EventTimeRange {
   to?: Date;
 }
 
+function toRecSetting(rs: RecSettingData): RecSetting {
+  return {
+    recEnabled: !isNoRec(rs.recMode),
+    recMode: getRecMode(rs.recMode),
+    priority: rs.priority,
+    tuijyuuFlag: rs.tuijyuuFlag !== 0,
+    serviceMode: rs.serviceMode,
+    pittariFlag: rs.pittariFlag !== 0,
+    batFilePath: rs.batFilePath,
+    suspendMode: rs.suspendMode,
+    rebootFlag: rs.rebootFlag !== 0,
+    useMargineFlag: rs.useMargineFlag !== 0,
+    startMargine: rs.startMargine,
+    endMargine: rs.endMargine,
+    continueRecFlag: rs.continueRecFlag !== 0,
+    partialRecFlag: rs.partialRecFlag !== 0,
+    tunerID: rs.tunerID,
+    recFolderList: rs.recFolderList.map((f) => ({
+      recFolder: f.recFolder,
+      writePlugIn: f.writePlugIn,
+      recNamePlugIn: f.recNamePlugIn,
+    })),
+  };
+}
+
+function toReserveInfo(r: ReserveData): ReserveInfo {
+  return {
+    id: r.reserveID,
+    title: r.title,
+    starttime: systemTimeToDate(r.startTime),
+    durationSec: r.durationSecond,
+    service: r.stationName,
+    onid: r.onid,
+    tsid: r.tsid,
+    sid: r.sid,
+    eid: r.eid,
+    overlapMode: r.overlapMode,
+    comment: r.comment,
+    recSetting: toRecSetting(r.recSetting),
+  };
+}
+
 /** TCPで取得した番組をEventInfoにする。開始時刻が未定の番組はnull */
 function toEventInfo(e: EpgEventInfo, serviceName: string): EventInfo | null {
   if (!e.startTime) return null;
@@ -320,21 +367,8 @@ export class EdcbClient {
   }
 
   async getReserves(): Promise<ReserveInfo[]> {
-    const entry = await this.fetchXml('/api/EnumReserveInfo');
-    return toArray(entry?.items?.reserveinfo).map((r: any) => ({
-      id: num(r.ID),
-      title: str(r.title),
-      starttime: parseDate(str(r.startDate), str(r.startTime)),
-      durationSec: num(r.duration),
-      service: str(r.service_name),
-      onid: num(r.ONID),
-      tsid: num(r.TSID),
-      sid: num(r.SID),
-      eid: num(r.eventID),
-      overlapMode: num(r.overlapMode),
-      comment: str(r.comment),
-      recSetting: parseRecSetting(r.recsetting),
-    }));
+    const r = await this.ctrl.sendVersioned(CMD.ENUM_RESERVE2);
+    return r.vec(readReserveData).map(toReserveInfo);
   }
 
   /** 番組が見つからないときはnullを返す */

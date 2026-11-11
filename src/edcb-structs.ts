@@ -6,6 +6,7 @@ import { Reader, SystemTime, i32, i64, struct, u8, vec, wstr } from './ctrlcmd.j
 
 /** コマンド番号（EDCBの Common/CtrlCmdDef.h） */
 export const CMD = {
+  ENUM_RESERVE2: 2011,
   ENUM_SERVICE: 1021,
   GET_PG_INFO: 1023,
   SEARCH_PG: 1025,
@@ -146,4 +147,134 @@ export function searchKeyInfo(key: SearchKey): Buffer {
     u8(0), // notDateFlag
     u8(0) // freeCAFlag
   );
+}
+
+/** REC_FILE_SET_INFO */
+export interface RecFileSetInfo {
+  recFolder: string;
+  writePlugIn: string;
+  recNamePlugIn: string;
+  recFileName: string;
+}
+
+/** REC_SETTING_DATA（CMD_VER 2以降の形式） */
+export interface RecSettingData {
+  /** 録画モード。無効のときは5以上の値で、元の録画モードも含む（isNoRec・getRecModeで解釈する） */
+  recMode: number;
+  priority: number;
+  tuijyuuFlag: number;
+  serviceMode: number;
+  pittariFlag: number;
+  batFilePath: string;
+  recFolderList: RecFileSetInfo[];
+  suspendMode: number;
+  rebootFlag: number;
+  useMargineFlag: number;
+  startMargine: number;
+  endMargine: number;
+  continueRecFlag: number;
+  partialRecFlag: number;
+  tunerID: number;
+  partialRecFolder: RecFileSetInfo[];
+}
+
+/** REC_SETTING_DATA::DIV_RECMODE */
+const DIV_RECMODE = 5;
+
+/** 予約が無効か（REC_SETTING_DATA::IsNoRec） */
+export function isNoRec(recMode: number): boolean {
+  return Math.floor(recMode / DIV_RECMODE) % 2 !== 0;
+}
+
+/** 無効かどうかを除いた録画モード（REC_SETTING_DATA::GetRecMode） */
+export function getRecMode(recMode: number): number {
+  return (recMode + (Math.floor(recMode / DIV_RECMODE) % 2)) % DIV_RECMODE;
+}
+
+/** 録画モードと有効・無効からrecModeの値を作る（getRecMode・isNoRecの逆） */
+export function makeRecMode(mode: number, enabled: boolean): number {
+  return enabled ? mode : DIV_RECMODE + ((mode + DIV_RECMODE - 1) % DIV_RECMODE);
+}
+
+/** RESERVE_DATA（CMD_VER 5の形式） */
+export interface ReserveData {
+  title: string;
+  startTime: SystemTime;
+  durationSecond: number;
+  stationName: string;
+  onid: number;
+  tsid: number;
+  sid: number;
+  eid: number;
+  comment: string;
+  reserveID: number;
+  overlapMode: number;
+  startTimeEpg: SystemTime;
+  recSetting: RecSettingData;
+  reserveStatus: number;
+  recFileNameList: string[];
+}
+
+function readRecFileSetInfo(r: Reader): RecFileSetInfo {
+  return r.struct((s) => ({ recFolder: s.wstr(), writePlugIn: s.wstr(), recNamePlugIn: s.wstr(), recFileName: s.wstr() }));
+}
+
+export function readRecSetting(r: Reader): RecSettingData {
+  return r.struct((s) => ({
+    recMode: s.u8(),
+    priority: s.u8(),
+    tuijyuuFlag: s.u8(),
+    serviceMode: s.u32(),
+    pittariFlag: s.u8(),
+    batFilePath: s.wstr(),
+    recFolderList: s.vec(readRecFileSetInfo),
+    suspendMode: s.u8(),
+    rebootFlag: s.u8(),
+    useMargineFlag: s.u8(),
+    startMargine: s.i32(),
+    endMargine: s.i32(),
+    continueRecFlag: s.u8(),
+    partialRecFlag: s.u8(),
+    tunerID: s.u32(),
+    partialRecFolder: s.done ? [] : s.vec(readRecFileSetInfo),
+  }));
+}
+
+export function readReserveData(r: Reader): ReserveData {
+  return r.struct((s) => {
+    const title = s.wstr();
+    const startTime = s.systemTime();
+    const durationSecond = s.u32();
+    const stationName = s.wstr();
+    const onid = s.u16();
+    const tsid = s.u16();
+    const sid = s.u16();
+    const eid = s.u16();
+    const comment = s.wstr();
+    const reserveID = s.u32();
+    s.u8(); // presentFlag（内部用）
+    const overlapMode = s.u8();
+    s.wstr(); // recFilePath（廃止）
+    const startTimeEpg = s.systemTime();
+    const recSetting = readRecSetting(s);
+    const reserveStatus = s.u32();
+    const recFileNameList = s.done ? [] : s.vec((x) => x.wstr());
+    return {
+      title,
+      startTime,
+      durationSecond,
+      stationName,
+      onid,
+      tsid,
+      sid,
+      eid,
+      comment,
+      reserveID,
+      overlapMode,
+      startTimeEpg,
+      recSetting,
+      reserveStatus,
+      recFileNameList,
+    };
+  });
 }
