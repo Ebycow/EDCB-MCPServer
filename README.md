@@ -4,9 +4,19 @@ EDCBをLLMから操作するためのMCPサーバー。番組情報取得、予�
 
 ## 前提
 
-- EDCBがWebUIとともに起動していること
-- Material WebUIがインストールされていること（`/EMWUI/`パスが有効であること）
-- デフォルト接続先: `http://localhost:5510`
+EDCB（EpgTimerSrv）に、TCP接続とHTTP接続の2つで接続します。
+
+| 接続 | 使うツール | EDCB側の設定 |
+|------|-----------|-------------|
+| TCP（既定のポート4510） | 番組表・番組検索・予約一覧・予約の変更と削除・録画済み一覧・自動予約一覧など、ほとんどのツール | EpgTimerSrvの設定「ネットワーク接続を許可する (EpgTimerNW用)」（`EnableTCPSrv=1`）を有効にし、アクセス制御（`TCPAccessControlList`）でMCPサーバーを動かすマシンのIPを許可する |
+| HTTP（既定のポート5510） | `add_reserve`（予約設定のプリセットを使った予約）だけ | WebUIを有効にし、Material WebUIをインストールする（`/EMWUI/`パスが有効であること） |
+
+TCP接続は、HTTP APIより数倍速く、複数チャンネルの番組表の一括取得やEDCB側での番組検索ができます。
+
+> [!WARNING]
+> EDCBのTCP接続には認証がなく、接続元のIPアドレスでしか制限できません。アクセス制御で許可した範囲からは、誰でも予約の変更・削除ができます。許可する範囲は信頼できるネットワークに限ってください。
+
+接続を確認するには `ping` ツールを使います（TCP接続とHTTP接続の結果をそれぞれ表示します）。
 
 ## ビルド
 
@@ -40,14 +50,14 @@ npm run build
 | `ping` | EDCBサーバーへの接続確認 |
 | `get_services` | チャンネル一覧取得 |
 | `get_epg` | 特定チャンネルの番組表取得 |
-| `get_event_info` | 番組詳細取得 |
-| `search_events` | キーワード番組検索 |
+| `get_event_info` | 番組詳細取得（出演者などの詳細情報を含む） |
+| `search_events` | 番組検索（EDCBの検索機能を使用。空白区切りでAND、除外キーワード・タイトルのみ検索に対応） |
 | `get_reserves` | 録画予約一覧取得 |
-| `add_reserve` | 録画予約追加（デフォルトプリセット使用） |
+| `add_reserve` | 録画予約追加（デフォルトプリセット使用。予約済みの番組は追加しない） |
 | `set_reserve_enabled` | 録画予約の有効/無効切り替え |
 | `delete_reserve` | 録画予約削除 |
-| `change_reserve` | 録画予約設定変更 |
-| `get_rec_info` | 録画済み番組一覧取得 |
+| `change_reserve` | 録画予約設定変更（指定した項目だけを変更） |
+| `get_rec_info` | 録画済み番組一覧取得（キーワード・期間・問題のある録画で絞り込み可） |
 | `get_auto_add` | 自動予約（EPGキーワード）一覧取得 |
 
 ## 使用例
@@ -95,11 +105,21 @@ set_reserve_enabled(id=2466, enabled=True)
 
 # 予約削除（取り消し不可）
 delete_reserve(id=2466)
+
+# 番組検索（空白区切りでAND、除外キーワード付き）
+search_events(keyword="ドラマ 刑事", notKeyword="再放送", brief=True)
+
+# 録画に失敗した番組・ドロップがある番組
+get_rec_info(only="problem")
 ```
+
+一覧を返すツール（`get_epg`・`search_events`・`get_reserves`・`get_rec_info`）は、`limit` を超える分を省略します。続きがある場合は先頭に「1036件中1〜20件目を表示（残り1016件。続きはoffset=20で取得できます）」のように表示するので、`offset` を指定して続きを取得できます。
 
 ## 環境変数
 
 | 変数 | デフォルト | 説明 |
 |------|-----------|------|
-| `EDCB_URL` | `http://localhost:5510` | EDCBサーバーのURL |
-| `EDCB_CACHE_SEC` | `180` | チャンネル一覧と番組表をキャッシュする秒数（`0`でキャッシュしない） |
+| `EDCB_URL` | `http://localhost:5510` | EDCBのHTTPサーバー（Material WebUI）のURL |
+| `EDCB_TCP_HOST` | `EDCB_URL`のホスト | EDCBのTCP接続のホスト |
+| `EDCB_TCP_PORT` | `4510` | EDCBのTCP接続のポート（EpgTimerSrvの設定`TCPPort`） |
+| `EDCB_CACHE_SEC` | `180` | チャンネル一覧をキャッシュする秒数（`0`でキャッシュしない） |
