@@ -551,7 +551,7 @@ server.registerTool('set_reserve_enabled', {
 
 // ---- 予約設定変更 ----
 server.registerTool('change_reserve', {
-  description: '既存の録画予約の設定（優先度・録画モード・マージン等）を変更します。予約IDはget_reservesで確認してください。変更しないパラメータは省略可能です',
+  description: '既存の録画予約の設定（優先度・録画モード・マージン等）を変更します。予約IDはget_reservesで確認してください。指定した項目だけを変更し、省略した項目と有効・無効の状態はそのまま残ります。マージンを片方だけ指定した場合、既定のマージンを使っていた予約のもう片方はEDCBの既定値になります',
   inputSchema: {
     id: z.number().describe('変更する予約のID'),
     priority: z.number().min(1).max(5).optional().describe('優先度（1-5）'),

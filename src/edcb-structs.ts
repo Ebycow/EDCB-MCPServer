@@ -2,11 +2,13 @@
  * EDCBのCtrlCmdで使うコマンド番号と構造体の読み書き。
  * 構造体の並びはEDCBの Common/StructDef.h・Common/CtrlCmdUtil.cpp に合わせる
  */
-import { Reader, SystemTime, i32, i64, struct, u8, vec, wstr } from './ctrlcmd.js';
+import { Reader, SystemTime, i32, i64, struct, systemTime, u16, u32, u8, vec, wstr } from './ctrlcmd.js';
 
 /** コマンド番号（EDCBの Common/CtrlCmdDef.h） */
 export const CMD = {
   ENUM_RESERVE2: 2011,
+  GET_RESERVE2: 2012,
+  CHG_RESERVE2: 2015,
   ENUM_SERVICE: 1021,
   GET_PG_INFO: 1023,
   SEARCH_PG: 1025,
@@ -219,6 +221,55 @@ function readRecFileSetInfo(r: Reader): RecFileSetInfo {
   return r.struct((s) => ({ recFolder: s.wstr(), writePlugIn: s.wstr(), recNamePlugIn: s.wstr(), recFileName: s.wstr() }));
 }
 
+function writeRecFileSetInfo(f: RecFileSetInfo): Buffer {
+  return struct(wstr(f.recFolder), wstr(f.writePlugIn), wstr(f.recNamePlugIn), wstr(f.recFileName));
+}
+
+export function writeRecSetting(rs: RecSettingData): Buffer {
+  return struct(
+    u8(rs.recMode),
+    u8(rs.priority),
+    u8(rs.tuijyuuFlag),
+    u32(rs.serviceMode),
+    u8(rs.pittariFlag),
+    wstr(rs.batFilePath),
+    vec(rs.recFolderList.map(writeRecFileSetInfo)),
+    u8(rs.suspendMode),
+    u8(rs.rebootFlag),
+    u8(rs.useMargineFlag),
+    i32(rs.startMargine),
+    i32(rs.endMargine),
+    u8(rs.continueRecFlag),
+    u8(rs.partialRecFlag),
+    u32(rs.tunerID),
+    vec(rs.partialRecFolder.map(writeRecFileSetInfo))
+  );
+}
+
+/** RESERVE_DATAをCMD_VER 5の形式で書く */
+export function writeReserveData(r: ReserveData): Buffer {
+  return struct(
+    wstr(r.title),
+    systemTime(r.startTime),
+    u32(r.durationSecond),
+    wstr(r.stationName),
+    u16(r.onid),
+    u16(r.tsid),
+    u16(r.sid),
+    u16(r.eid),
+    wstr(r.comment),
+    u32(r.reserveID),
+    u8(0), // presentFlag（内部用）
+    u8(r.overlapMode),
+    wstr(''), // recFilePath（廃止）
+    systemTime(r.startTimeEpg),
+    writeRecSetting(r.recSetting),
+    u32(r.reserveStatus),
+    vec(r.recFileNameList.map(wstr)),
+    u32(0) // param1（将来用）
+  );
+}
+
 export function readRecSetting(r: Reader): RecSettingData {
   return r.struct((s) => ({
     recMode: s.u8(),
@@ -259,6 +310,7 @@ export function readReserveData(r: Reader): ReserveData {
     const recSetting = readRecSetting(s);
     const reserveStatus = s.u32();
     const recFileNameList = s.done ? [] : s.vec((x) => x.wstr());
+    if (!s.done) s.u32(); // param1（将来用）
     return {
       title,
       startTime,

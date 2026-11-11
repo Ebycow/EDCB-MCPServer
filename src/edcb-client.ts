@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import * as xml2js from 'xml2js';
-import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, i64, systemTimeToDate, toEdcbTime, vec } from './ctrlcmd.js';
+import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, i64, systemTimeToDate, toEdcbTime, u32, vec } from './ctrlcmd.js';
 import {
   CMD,
   EpgEventInfo,
@@ -10,12 +10,14 @@ import {
   ReserveData,
   getRecMode,
   isNoRec,
+  makeRecMode,
   readEventInfo,
   readReserveData,
   readServiceEventInfo,
   readServiceInfo,
   searchKeyInfo,
   serviceKey,
+  writeReserveData,
 } from './edcb-structs.js';
 import { genreName } from './genres.js';
 
@@ -269,6 +271,9 @@ function toEventInfo(e: EpgEventInfo, serviceName: string): EventInfo | null {
   };
 }
 
+/** CMD2_EPG_SRV_GET_RESERVE2にこのIDを渡すと、EDCBの既定の設定（マージンなど）が入った予約が返る */
+const DEFAULT_RESERVE_ID = 0x7fffffff;
+
 export class EdcbClient {
   private http: AxiosInstance;
   private baseUrl: string;
@@ -481,30 +486,27 @@ export class EdcbClient {
     await this.postForm('/api/SetReserve', { ctok, del: 1 }, { id });
   }
 
-  async setReserveEnabled(id: number, enabled: boolean): Promise<void> {
-    const reserves = await this.getReserves();
-    const reserve = reserves.find((r) => r.id === id);
-    if (!reserve) throw new Error(`予約ID ${id} が見つかりません`);
-
-    const ctok = await this.getCsrfToken();
-    const rs = reserve.recSetting;
-    const body: Record<string, string | number | boolean> = {
-      ctok,
-      change: 1,
-      recEnabled: enabled ? 1 : 0,
-      recMode: rs.recMode >= 0 && rs.recMode <= 4 ? rs.recMode : 1,
-      priority: rs.priority || 2,
-      tuijyuuFlag: rs.tuijyuuFlag ? 1 : 0,
-      pittariFlag: rs.pittariFlag ? 1 : 0,
-      suspendMode: rs.suspendMode ?? 0,
-      rebootFlag: rs.rebootFlag ? 1 : 0,
-      tunerID: rs.tunerID ?? 0,
-      startMargin: rs.startMargine ?? 0,
-      endMargin: rs.endMargine ?? 0,
-    };
-    await this.postForm('/api/SetReserve', body, { id });
+  /** 予約の現在の内容。見つからなければエラー */
+  private async getReserveData(id: number): Promise<ReserveData> {
+    const r = await this.ctrl.sendVersioned(CMD.GET_RESERVE2, u32(id)).catch((e) => {
+      if (e instanceof CtrlCmdError && e.isNotFound) throw new Error(`予約ID ${id} が見つかりません`);
+      throw e;
+    });
+    return readReserveData(r);
   }
 
+  /** 予約の内容を書き換える。dataは現在の内容をもとに、変える項目だけを変えたもの */
+  private async putReserveData(data: ReserveData): Promise<void> {
+    await this.ctrl.sendVersioned(CMD.CHG_RESERVE2, vec([writeReserveData(data)]));
+  }
+
+  async setReserveEnabled(id: number, enabled: boolean): Promise<void> {
+    const data = await this.getReserveData(id);
+    data.recSetting.recMode = makeRecMode(getRecMode(data.recSetting.recMode), enabled);
+    await this.putReserveData(data);
+  }
+
+  /** 指定した項目だけを変える（有効・無効の状態は変えない） */
   async changeReserve(
     id: number,
     params: {
@@ -517,38 +519,25 @@ export class EdcbClient {
       endMargine?: number;
     }
   ): Promise<void> {
-    const ctok = await this.getCsrfToken();
-    const body: Record<string, string | number | boolean> = {
-      ctok,
-      change: 1,
-      recEnabled: 1,
-    };
-    if (params.recMode !== undefined) body['recMode'] = params.recMode;
-    if (params.priority !== undefined) body['priority'] = params.priority;
-    if (params.tuijyuuFlag !== undefined) body['tuijyuuFlag'] = params.tuijyuuFlag ? 1 : 0;
-    if (params.pittariFlag !== undefined) body['pittariFlag'] = params.pittariFlag ? 1 : 0;
-    if (params.suspendMode !== undefined) body['suspendMode'] = params.suspendMode;
-    if (params.startMargine !== undefined) body['startMargin'] = params.startMargine;
-    if (params.endMargine !== undefined) body['endMargin'] = params.endMargine;
-
-    // Need at least recMode, priority, suspendMode, tunerID for validation
-    if (!body['recMode']) body['recMode'] = 1;
-    if (!body['priority']) body['priority'] = 2;
-    if (body['suspendMode'] === undefined) body['suspendMode'] = 0;
-    body['tunerID'] = 0;
-    body['pittariFlag'] = body['pittariFlag'] ?? 0;
-    body['tuijyuuFlag'] = body['tuijyuuFlag'] ?? 1;
-    body['rebootFlag'] = 0;
-
-    if (body['startMargin'] !== undefined && body['endMargin'] !== undefined) {
-      // explicit margins provided, no useDefMarginFlag
-    } else {
-      // Use margin=0 as default
-      body['startMargin'] = 0;
-      body['endMargin'] = 0;
+    const data = await this.getReserveData(id);
+    const rs = data.recSetting;
+    if (params.recMode !== undefined) rs.recMode = makeRecMode(params.recMode, !isNoRec(rs.recMode));
+    if (params.priority !== undefined) rs.priority = params.priority;
+    if (params.tuijyuuFlag !== undefined) rs.tuijyuuFlag = params.tuijyuuFlag ? 1 : 0;
+    if (params.pittariFlag !== undefined) rs.pittariFlag = params.pittariFlag ? 1 : 0;
+    if (params.suspendMode !== undefined) rs.suspendMode = params.suspendMode;
+    if (params.startMargine !== undefined || params.endMargine !== undefined) {
+      if (!rs.useMargineFlag) {
+        // 既定のマージンを使っていた予約は、指定しなかった側をEDCBの既定値にする
+        const def = await this.getReserveData(DEFAULT_RESERVE_ID);
+        rs.startMargine = def.recSetting.startMargine;
+        rs.endMargine = def.recSetting.endMargine;
+      }
+      rs.useMargineFlag = 1;
+      if (params.startMargine !== undefined) rs.startMargine = params.startMargine;
+      if (params.endMargine !== undefined) rs.endMargine = params.endMargine;
     }
-
-    await this.postForm('/api/SetReserve', body, { id });
+    await this.putReserveData(data);
   }
 
   async getRecInfo(id?: number): Promise<RecInfo[]> {
