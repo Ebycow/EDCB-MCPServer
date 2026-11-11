@@ -606,7 +606,7 @@ server.registerTool('get_rec_info', {
 
 // ---- 自動予約一覧 ----
 server.registerTool('get_auto_add', {
-  description: 'EPGキーワード自動予約（録画予約の自動登録ルール）の一覧を取得します。キーワード・除外キーワード・対象チャンネル・これまでの追加件数を確認できます',
+  description: 'EPGキーワード自動予約（録画予約の自動登録ルール）の一覧を取得します。キーワード・除外キーワード・対象チャンネル・番組長の条件・これまでの追加件数を確認できます。無効にしているルールには（無効）と表示します',
   inputSchema: {},
 }, async () => {
   const infos = await client.getAutoAdd();
@@ -618,7 +618,11 @@ server.registerTool('get_auto_add', {
       const services = a.serviceList
         .map((s) => `${s.onid}-${s.tsid}-${s.sid}`)
         .join(', ');
-      return `[ID:${a.id}] キーワード: "${a.keyword}"\n  除外: ${a.notKeyword || 'なし'}\n  対象: ${services || '全チャンネル'}\n  追加済: ${a.addCount}件`;
+      const duration =
+        a.durationMin || a.durationMax
+          ? `\n  番組長: ${a.durationMin ? `${a.durationMin}分以上` : ''}${a.durationMax ? `${a.durationMax}分以下` : ''}`
+          : '';
+      return `[ID:${a.id}] キーワード: "${a.keyword}"${a.enabled ? '' : '（無効）'}\n  除外: ${a.notKeyword || 'なし'}\n  対象: ${services || '全チャンネル'}${duration}\n  追加済: ${a.addCount}件`;
     })
     .join('\n\n');
   return {
