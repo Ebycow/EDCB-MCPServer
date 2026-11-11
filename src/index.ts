@@ -4,9 +4,15 @@ import { z } from 'zod';
 import { EdcbClient, EdcbError, EventInfo, ReserveInfo } from './edcb-client.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
+const EDCB_TCP_PORT = Number(process.env.EDCB_TCP_PORT ?? 4510);
 const EDCB_CACHE_SEC = Number(process.env.EDCB_CACHE_SEC ?? 180);
 
-const client = new EdcbClient(EDCB_URL, Number.isFinite(EDCB_CACHE_SEC) ? EDCB_CACHE_SEC : 180);
+const client = new EdcbClient({
+  url: EDCB_URL,
+  tcpHost: process.env.EDCB_TCP_HOST,
+  tcpPort: Number.isFinite(EDCB_TCP_PORT) ? EDCB_TCP_PORT : 4510,
+  cacheTtlSec: Number.isFinite(EDCB_CACHE_SEC) ? EDCB_CACHE_SEC : 180,
+});
 const server = new McpServer({
   name: 'edcb-mcp',
   version: '1.0.0',
@@ -628,7 +634,7 @@ server.registerTool('get_auto_add', {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`EDCB MCP Server started (EDCB_URL: ${EDCB_URL})`);
+  console.error(`EDCB MCP Server started (EDCB_URL: ${EDCB_URL}, TCP: ${client.tcpEndpoint})`);
 }
 
 main().catch((err) => {

@@ -1,5 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import * as xml2js from 'xml2js';
+import { CtrlCmdClient, Reader } from './ctrlcmd.js';
+import { CMD, readServiceInfo } from './edcb-structs.js';
 
 export interface ServiceInfo {
   onid: number;
@@ -163,19 +165,36 @@ function parseRecSetting(r: any): RecSetting {
   };
 }
 
+export interface EdcbClientOptions {
+  /** EDCBのHTTPサーバー（Material WebUI）のURL */
+  url: string;
+  /** TCP接続（CtrlCmd）のホスト。省略時はurlのホスト */
+  tcpHost?: string;
+  /** TCP接続（CtrlCmd）のポート */
+  tcpPort?: number;
+  /** チャンネル一覧・番組表を使い回す秒数（0で無効） */
+  cacheTtlSec?: number;
+}
+
 export class EdcbClient {
   private http: AxiosInstance;
   private baseUrl: string;
   private parser: xml2js.Parser;
+  private ctrl: CtrlCmdClient;
   private cacheTtlMs: number;
   private cache = new Map<string, { expires: number; value: Promise<unknown> }>();
 
-  /** cacheTtlSec: チャンネル一覧・番組表を使い回す秒数（0で無効） */
-  constructor(baseUrl: string, cacheTtlSec = 180) {
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+  constructor({ url, tcpHost, tcpPort = 4510, cacheTtlSec = 180 }: EdcbClientOptions) {
+    this.baseUrl = url.replace(/\/$/, '');
     this.http = axios.create({ baseURL: this.baseUrl, timeout: 15000 });
     this.parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: false });
+    this.ctrl = new CtrlCmdClient(tcpHost || new URL(this.baseUrl).hostname, tcpPort);
     this.cacheTtlMs = cacheTtlSec * 1000;
+  }
+
+  /** TCP接続（CtrlCmd）の接続先（"host:port"） */
+  get tcpEndpoint(): string {
+    return `${this.ctrl.host}:${this.ctrl.port}`;
   }
 
   /** 同じキーの取得結果を一定時間使い回す（同時に来た要求も1回の取得にまとめる）。失敗した結果は残さない */
@@ -258,16 +277,16 @@ export class EdcbClient {
   }
 
   private async fetchServices(): Promise<ServiceInfo[]> {
-    const entry = await this.fetchXml('/api/EnumService');
-    return toArray(entry?.items?.serviceinfo).map((s: any) => ({
-      onid: num(s.ONID),
-      tsid: num(s.TSID),
-      sid: num(s.SID),
-      service_type: num(s.service_type),
-      partialReceptionFlag: bool(s.partialReceptionFlag),
-      service_name: str(s.service_name),
-      network_name: str(s.network_name),
-      remote_control_key_id: num(s.remote_control_key_id),
+    const data = await this.ctrl.send(CMD.ENUM_SERVICE);
+    return new Reader(data).vec(readServiceInfo).map((s) => ({
+      onid: s.onid,
+      tsid: s.tsid,
+      sid: s.sid,
+      service_type: s.service_type,
+      partialReceptionFlag: s.partialReceptionFlag,
+      service_name: s.service_name,
+      network_name: s.network_name,
+      remote_control_key_id: s.remote_control_key_id,
     }));
   }
 
