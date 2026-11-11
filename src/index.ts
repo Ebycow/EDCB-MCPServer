@@ -401,6 +401,7 @@ server.registerTool('search_events', {
   ].join(' '),
   inputSchema: {
     keyword: z.string().optional().describe('タイトル・番組説明・詳細情報に含まれるキーワード（部分一致）。空白で区切るとAND検索（例: "ドラマ 刑事"）'),
+    notKeyword: z.string().optional().describe('除外キーワード。keywordと一緒に指定し、これを含む番組を除く。空白で区切るとどれか1つでも含む番組を除く（例: "再放送 ダイジェスト"）'),
     titleOnly: z.boolean().optional().describe('trueでkeywordをタイトルだけから探す（デフォルトfalse）。番組説明の出演者名などによる関係のないヒットを減らせます'),
     genreName: z.string().optional().describe('ジャンル名の部分一致。使えるジャンル名はlist_genresで確認してください。大カテゴリ（例: "ドラマ"）は広く、小カテゴリ（例: "国内ドラマ"）は絞り込みが強くなります'),
     durationMin: z.number().optional().describe('番組長の最小値（分）。例: 映画を探す場合は 60 など'),
@@ -414,7 +415,7 @@ server.registerTool('search_events', {
     brief: z.boolean().optional().describe('trueで1件1行（日時・チャンネル・タイトルのみ）の簡易表示。多くの候補から絞り込むときに使います'),
     limit: z.number().optional().describe('最大件数（デフォルト20）'),
   },
-}, async ({ keyword, titleOnly = false, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, brief = false, limit = 20 }) => {
+}, async ({ keyword, notKeyword, titleOnly = false, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, brief = false, limit = 20 }) => {
   if (!keyword && !genreName && durationMin === undefined && durationMax === undefined && !startAfter && !startBefore) {
     return { content: [{ type: 'text', text: 'keyword、genreName、durationMin/durationMax、startAfter/startBefore のいずれかを指定してください' }] };
   }
@@ -445,7 +446,7 @@ server.registerTool('search_events', {
   // キーワードはEDCBの番組検索で探す（開始時刻の範囲は指定できないため、あとで絞り込む）。
   // キーワードがなければ、開始時刻の範囲で番組表をまとめて取得する
   let results = keyword?.trim()
-    ? await client.searchEvents(keyword, services, { titleOnly })
+    ? await client.searchEvents(keyword, services, { notKeyword, titleOnly })
     : await client.getEvents(services, { from: after, to: before && new Date(before.getTime() + 1) });
 
   if (after) {
