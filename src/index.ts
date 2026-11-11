@@ -67,9 +67,13 @@ function formatEvent(e: EventInfo, opts: { brief: boolean; showService: boolean 
   return `${id} ${e.title}${service}\n  日時: ${formatSpan(e.starttime, e.durationSec)} ${dur}\n  ジャンル: ${genres || 'なし'}\n  概要: ${summarize(e.text, 80)}`;
 }
 
-/** 件数の表示。limitで切り詰めた場合は全体の件数も示す */
-function countLabel(total: number, shown: number): string {
-  return total > shown ? `${total}件中${shown}件を表示` : `${total}件`;
+/** offset・limitで切り出した範囲の表示。続きがあれば、続きを取得するoffsetを示す */
+function pageLabel(total: number, offset: number, shown: number): string {
+  if (shown === 0) return `${total}件（offset=${offset}以降はありません）`;
+  if (offset === 0 && shown === total) return `${total}件`;
+  const rest = total - offset - shown;
+  const range = `${total}件中${shown === 1 ? offset + 1 : `${offset + 1}〜${offset + shown}`}件目を表示`;
+  return rest > 0 ? `${range}（残り${rest}件。続きはoffset=${offset + shown}で取得できます）` : range;
 }
 
 /**
@@ -234,9 +238,10 @@ server.registerTool('get_reserves', {
       .enum(['overlap', 'missing', 'disabled', 'problem'])
       .optional()
       .describe('状態で絞り込む。overlap=重複あり・録画しない、missing=EPGに番組なし、disabled=無効、problem=これらのいずれか'),
-    limit: z.number().optional().describe('最大件数（デフォルト50）'),
+    offset: z.number().int().min(0).optional().describe('先頭から飛ばす件数（続きを取得するとき。デフォルト0）'),
+    limit: z.number().int().min(1).optional().describe('最大件数（デフォルト50）'),
   },
-}, async ({ id, from, to, onid, tsid, sid, keyword, only, limit = 50 }) => {
+}, async ({ id, from, to, onid, tsid, sid, keyword, only, offset = 0, limit = 50 }) => {
   const reserves = await client.getReserves();
   if (id !== undefined) {
     const r = reserves.find((x) => x.id === id);
@@ -284,11 +289,13 @@ server.registerTool('get_reserves', {
   if (filtered && matched.length === 0) {
     return { content: [{ type: 'text', text: `${summary}\n条件に一致する予約はありません` }] };
   }
-  const shown = matched.slice(0, limit);
+  const shown = matched.slice(offset, offset + limit);
   const text = shown.map((r) => formatReserveLine(r, missing.has(r.id))).join('\n');
   const header = [summary];
-  if (filtered) header.push(`条件に一致: ${countLabel(matched.length, shown.length)}`);
-  else if (matched.length > shown.length) header.push(`${countLabel(matched.length, shown.length)}（from/to・チャンネル・keyword・onlyで絞り込めます）`);
+  if (filtered) header.push(`条件に一致: ${pageLabel(matched.length, offset, shown.length)}`);
+  else if (matched.length > shown.length) {
+    header.push(pageLabel(matched.length, offset, shown.length), 'from/to・チャンネル・keyword・onlyで絞り込むこともできます');
+  }
   header.push(RESERVE_LINE_LEGEND);
   return {
     content: [{ type: 'text', text: `${header.join('\n')}\n\n${text}` }],
@@ -308,9 +315,10 @@ server.registerTool('get_epg', {
     from: z.string().optional().describe('この日時に放送中、またはこれ以降に始まる番組から表示（JST、形式: "YYYY-MM-DD HH:MM"、省略時は現在時刻）'),
     to: z.string().optional().describe('この日時までに始まる番組まで表示（JST、形式: "YYYY-MM-DD HH:MM"）'),
     brief: z.boolean().optional().describe('trueで1件1行（日時・タイトルのみ）の簡易表示'),
-    limit: z.number().optional().describe('最大件数（デフォルト30）'),
+    offset: z.number().int().min(0).optional().describe('先頭から飛ばす件数（続きを取得するとき。デフォルト0）'),
+    limit: z.number().int().min(1).optional().describe('最大件数（デフォルト30）'),
   },
-}, async ({ onid, tsid, sid, from, to, brief = false, limit = 30 }) => {
+}, async ({ onid, tsid, sid, from, to, brief = false, offset = 0, limit = 30 }) => {
   const fromTime = from ? parseJSTString(from) : new Date();
   const toTime = to ? parseJSTString(to) : undefined;
   if (isNaN(fromTime.getTime()) || (toTime && isNaN(toTime.getTime()))) {
@@ -336,14 +344,14 @@ server.registerTool('get_epg', {
   if (inRange.length === 0) {
     return { content: [{ type: 'text', text: '指定された範囲の番組情報がありません' }] };
   }
-  const upcoming = inRange.slice(0, limit);
+  const upcoming = inRange.slice(offset, offset + limit);
 
   const text = upcoming
     .map((e) => formatEvent(e, { brief, showService: false }))
     .join(brief ? '\n' : '\n\n');
 
   return {
-    content: [{ type: 'text', text: `${upcoming[0].service}の番組: ${countLabel(inRange.length, upcoming.length)}\n\n${text}` }],
+    content: [{ type: 'text', text: `${inRange[0].service}の番組: ${pageLabel(inRange.length, offset, upcoming.length)}\n\n${text}` }],
   };
 });
 
@@ -414,9 +422,10 @@ server.registerTool('search_events', {
     sid: z.number().optional().describe('チャンネルを絞り込む場合のサービスID（get_servicesで確認）'),
     includeOneSeg: z.boolean().optional().describe('ワンセグ（部分受信）サービスも検索対象に含める（デフォルトfalse。sid指定時は常に含める）'),
     brief: z.boolean().optional().describe('trueで1件1行（日時・チャンネル・タイトルのみ）の簡易表示。多くの候補から絞り込むときに使います'),
-    limit: z.number().optional().describe('最大件数（デフォルト20）'),
+    offset: z.number().int().min(0).optional().describe('先頭から飛ばす件数（続きを取得するとき。デフォルト0）'),
+    limit: z.number().int().min(1).optional().describe('最大件数（デフォルト20）'),
   },
-}, async ({ keyword, notKeyword, titleOnly = false, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, brief = false, limit = 20 }) => {
+}, async ({ keyword, notKeyword, titleOnly = false, genreName, durationMin, durationMax, startAfter, startBefore, onid, tsid, sid, includeOneSeg = false, brief = false, offset = 0, limit = 20 }) => {
   if (!keyword && !genreName && durationMin === undefined && durationMax === undefined && !startAfter && !startBefore) {
     return { content: [{ type: 'text', text: 'keyword、genreName、durationMin/durationMax、startAfter/startBefore のいずれかを指定してください' }] };
   }
@@ -474,12 +483,12 @@ server.registerTool('search_events', {
   if (results.length === 0) {
     return { content: [{ type: 'text', text: '条件に一致する番組が見つかりませんでした' }] };
   }
-  const shown = results.sort((a, b) => a.starttime.getTime() - b.starttime.getTime()).slice(0, limit);
+  const shown = results.sort((a, b) => a.starttime.getTime() - b.starttime.getTime()).slice(offset, offset + limit);
   const text = shown
     .map((e) => formatEvent(e, { brief, showService: true }))
     .join(brief ? '\n' : '\n\n');
   return {
-    content: [{ type: 'text', text: `条件に一致する番組: ${countLabel(results.length, shown.length)}\n\n${text}` }],
+    content: [{ type: 'text', text: `条件に一致する番組: ${pageLabel(results.length, offset, shown.length)}\n\n${text}` }],
   };
 });
 
@@ -571,15 +580,6 @@ server.registerTool('change_reserve', {
 
 /** 録画結果が正常終了（EDCBのREC_END_STATUS_NORMAL） */
 const REC_END_STATUS_NORMAL = 1;
-
-/** offset・limitで切り出した範囲の表示。続きがあれば、続きを取得するoffsetを示す */
-function pageLabel(total: number, offset: number, shown: number): string {
-  if (shown === 0) return `${total}件（offset=${offset}以降はありません）`;
-  if (offset === 0 && shown === total) return `${total}件`;
-  const rest = total - offset - shown;
-  const range = `${total}件中${shown === 1 ? offset + 1 : `${offset + 1}〜${offset + shown}`}件目を表示`;
-  return rest > 0 ? `${range}（残り${rest}件。続きはoffset=${offset + shown}で取得できます）` : range;
-}
 
 // ---- 録画済み番組一覧 ----
 server.registerTool('get_rec_info', {
