@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { EdcbClient, EdcbError, EventInfo, ReserveInfo } from './edcb-client.js';
+import { EdcbClient, EventInfo, ReserveInfo } from './edcb-client.js';
+import { ARIB_GENRES } from './genres.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
 const EDCB_TCP_PORT = Number(process.env.EDCB_TCP_PORT ?? 4510);
@@ -95,22 +96,6 @@ server.registerTool('ping', {
   };
 });
 
-// ---- ARIBジャンルテーブル ----
-const ARIB_GENRES: Array<{ major: string; minor: string[] }> = [
-  { major: 'ニュース／報道', minor: ['定時・総合', '天気', '特集・ドキュメント', '政治・国会', '経済・市況', '海外・国際', '解説', '討論・会談', '報道特番', 'ローカル・地域', '交通'] },
-  { major: 'スポーツ', minor: ['スポーツニュース', '野球', 'サッカー', 'ゴルフ', 'その他の球技', '相撲・格闘技', 'オリンピック・国際大会', 'マラソン・陸上・水泳', 'モータースポーツ', 'マリン・ウィンタースポーツ', '競馬・公営競技'] },
-  { major: '情報／ワイドショー', minor: ['芸能・ワイドショー', 'ファッション', '暮らし・住まい', '健康・医療', 'ショッピング・通販', 'グルメ・料理', 'イベント', '番組紹介・お知らせ'] },
-  { major: 'ドラマ', minor: ['国内ドラマ', '海外ドラマ', '時代劇'] },
-  { major: '音楽', minor: ['国内ロック・ポップス', '海外ロック・ポップス', 'クラシック・オペラ', 'ジャズ・フュージョン', '歌謡曲・演歌', 'ライブ・コンサート', 'ランキング・リクエスト', 'カラオケ・のど自慢', '民謡・邦楽', '童謡・キッズ', '民族音楽・ワールドミュージック'] },
-  { major: 'バラエティ', minor: ['クイズ', 'ゲーム', 'トークバラエティ', 'お笑い・コメディ', '音楽バラエティ', '旅バラエティ', '料理バラエティ'] },
-  { major: '映画', minor: ['洋画', '邦画', 'アニメ'] },
-  { major: 'アニメ／特撮', minor: ['国内アニメ', '海外アニメ', '特撮'] },
-  { major: 'ドキュメンタリー／教養', minor: ['社会・時事', '歴史・紀行', '自然・動物・環境', '宇宙・科学・医学', 'カルチャー・伝統文化', '文学・文芸', 'スポーツ', 'ドキュメンタリー全般', 'インタビュー・討論'] },
-  { major: '劇場／公演', minor: ['現代劇・新劇', 'ミュージカル', 'ダンス・バレエ', '落語・演芸', '歌舞伎・古典'] },
-  { major: '趣味／教育', minor: ['旅・釣り・アウトドア', '園芸・ペット・手芸', '音楽・美術・工芸', '囲碁・将棋', '麻雀・パチンコ', '車・オートバイ', 'コンピュータ・ＴＶゲーム', '会話・語学', '幼児・小学生', '中学生・高校生', '大学生・受験', '生涯教育・資格', '教育問題'] },
-  { major: '福祉', minor: ['高齢者', '障害者', '社会福祉', 'ボランティア', '手話', '文字（字幕）', '音声解説'] },
-];
-
 // ---- ジャンル一覧 ----
 server.registerTool('list_genres', {
   description: 'EPG番組検索で使えるジャンル名の一覧を返します。search_eventsのgenreNameパラメータに渡す値を確認するために使います。大カテゴリ（ニュース／報道、スポーツ…）と小カテゴリ（野球、サッカー…）の階層構造で表示します。genreNameは部分一致なので大カテゴリ名でも小カテゴリ名でも使えます',
@@ -163,17 +148,19 @@ const REC_MODES = ['全サービス', '指定サービス', '全サービス（�
 /** eid=0xFFFFはプログラム予約（番組に紐付かない） */
 const PROGRAM_RESERVE_EID = 0xffff;
 
-/** 予約対象の番組がEPGから消えている予約のIDを返す（EPGを取得できなかったサービスは判定しない） */
+/** 予約対象の番組がEPGから消えている予約のIDを返す（番組表がないサービスは判定しない） */
 async function findReservesMissingFromEpg(reserves: ReserveInfo[]): Promise<Set<number>> {
   const serviceKeys = [...new Set(reserves.map((r) => `${r.onid}-${r.tsid}-${r.sid}`))];
+  const services = serviceKeys.map((key) => {
+    const [onid, tsid, sid] = key.split('-').map(Number);
+    return { onid, tsid, sid };
+  });
   const epgEids = new Map<string, Set<number>>();
-  await Promise.all(
-    serviceKeys.map(async (key) => {
-      const [onid, tsid, sid] = key.split('-').map(Number);
-      const events = await client.getEventsForService(onid, tsid, sid, 1).catch(() => null);
-      if (events) epgEids.set(key, new Set(events.map((e) => e.eid)));
-    })
-  );
+  for (const e of await client.getEvents(services)) {
+    const key = `${e.onid}-${e.tsid}-${e.sid}`;
+    if (!epgEids.has(key)) epgEids.set(key, new Set());
+    epgEids.get(key)!.add(e.eid);
+  }
   return new Set(
     reserves
       .filter((r) => {
@@ -308,6 +295,9 @@ server.registerTool('get_reserves', {
   };
 });
 
+/** 番組の長さの上限の目安（放送中の番組を開始時刻の範囲で探すときに、範囲をこの分だけ前に広げる） */
+const LONGEST_EVENT_MS = 24 * 3600 * 1000;
+
 // ---- 番組EPG取得（特定チャンネル）----
 server.registerTool('get_epg', {
   description: '特定チャンネルの番組表（EPG）を取得します。onid/tsid/sidはget_servicesで確認してください。add_reserveに必要なeidはここで確認します。from/toで日時範囲を指定でき、省略時は現在放送中の番組から表示します。結果は "[onid-tsid-sid-eid] タイトル" の形式で表示されます',
@@ -321,17 +311,21 @@ server.registerTool('get_epg', {
     limit: z.number().optional().describe('最大件数（デフォルト30）'),
   },
 }, async ({ onid, tsid, sid, from, to, brief = false, limit = 30 }) => {
-  const events = await client.getEventsForService(onid, tsid, sid, 1).catch((e) => {
-    if (e instanceof EdcbError && e.isEpgNotFound) return [];
-    throw e;
-  });
-  if (events.length === 0) {
-    return { content: [{ type: 'text', text: await explainServiceWithoutEpg(onid, tsid, sid) }] };
-  }
   const fromTime = from ? parseJSTString(from) : new Date();
   const toTime = to ? parseJSTString(to) : undefined;
   if (isNaN(fromTime.getTime()) || (toTime && isNaN(toTime.getTime()))) {
     return { content: [{ type: 'text', text: 'from/toは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
+  }
+  // fromの時点で放送中の番組も含めるため、開始時刻の範囲は長時間番組の分だけ前に広げる
+  const events = await client.getEventsForService(onid, tsid, sid, {
+    from: new Date(fromTime.getTime() - LONGEST_EVENT_MS),
+    to: toTime && new Date(toTime.getTime() + 1),
+  });
+  if (events.length === 0) {
+    const all = await client.getEventsForService(onid, tsid, sid);
+    if (all.length === 0) {
+      return { content: [{ type: 'text', text: await explainServiceWithoutEpg(onid, tsid, sid) }] };
+    }
   }
   const inRange = events
     .filter((e) => {
@@ -365,7 +359,7 @@ server.registerTool('get_event_info', {
 }, async ({ onid, tsid, sid, eid }) => {
   const ev = await client.getEventInfo(onid, tsid, sid, eid);
   if (!ev) {
-    const serviceEvents = await client.getEventsForService(onid, tsid, sid, 1).catch(() => []);
+    const serviceEvents = await client.getEventsForService(onid, tsid, sid);
     if (serviceEvents.length === 0) {
       return { content: [{ type: 'text', text: `番組ID ${onid}-${tsid}-${sid}-${eid} が見つかりません。${await explainServiceWithoutEpg(onid, tsid, sid)}` }] };
     }
@@ -398,7 +392,7 @@ ${ev.text}`;
 server.registerTool('search_events', {
   description: [
     '番組を検索・絞り込みします。keyword・genreName・番組長・開始時刻のいずれか1つ以上を指定してください。複数指定した場合はAND条件です。',
-    '全サービスのEPGをクライアント側でフィルタします（番組表は数分間キャッシュされるため、2回目以降の検索は高速です）。',
+    '対象チャンネルの番組表をまとめて取得してから絞り込みます。開始時刻（startAfter/startBefore）を指定すると取得量が減って速くなります。',
     'onid/tsid/sidは一部だけの指定も可能で、指定した値に一致するチャンネルに絞り込みます（例: onidのみでそのネットワーク全体）。',
     'ワンセグ（部分受信）サービスは通常の放送と番組が重複するため、sidを指定しない限りデフォルトで除外します。含める場合はincludeOneSeg=trueを指定してください。',
     'ジャンル名はlist_genresツールで確認できます。大カテゴリ（例: "ドラマ"）でも小カテゴリ（例: "国内ドラマ"）でも部分一致で使えます。大カテゴリは検索範囲が広くなり、小カテゴリは絞り込みが強くなります。',
@@ -441,13 +435,13 @@ server.registerTool('search_events', {
     }
   }
 
-  const allEvents = (
-    await Promise.all(
-      services.map((s) => client.getEventsForService(s.onid, s.tsid, s.sid, 1).catch(() => []))
-    )
-  ).flat();
+  const after = startAfter ? parseJSTString(startAfter) : undefined;
+  const before = startBefore ? parseJSTString(startBefore) : undefined;
+  if ((after && isNaN(after.getTime())) || (before && isNaN(before.getTime()))) {
+    return { content: [{ type: 'text', text: 'startAfter/startBeforeは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
+  }
 
-  let results = allEvents;
+  let results = await client.getEvents(services, { from: after, to: before && new Date(before.getTime() + 1) });
 
   if (keyword) {
     const kw = normalizeForSearch(keyword);
@@ -465,19 +459,6 @@ server.registerTool('search_events', {
 
   if (durationMax !== undefined) {
     results = results.filter((e) => e.durationSec <= durationMax * 60);
-  }
-
-  const after = startAfter ? parseJSTString(startAfter) : undefined;
-  const before = startBefore ? parseJSTString(startBefore) : undefined;
-  if ((after && isNaN(after.getTime())) || (before && isNaN(before.getTime()))) {
-    return { content: [{ type: 'text', text: 'startAfter/startBeforeは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
-  }
-  if (after) {
-    results = results.filter((e) => e.starttime >= after);
-  }
-
-  if (before) {
-    results = results.filter((e) => e.starttime <= before);
   }
 
   if (results.length === 0) {

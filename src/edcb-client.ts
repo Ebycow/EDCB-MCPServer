@@ -1,7 +1,8 @@
 import axios, { AxiosInstance } from 'axios';
 import * as xml2js from 'xml2js';
-import { CtrlCmdClient, Reader } from './ctrlcmd.js';
-import { CMD, readServiceInfo } from './edcb-structs.js';
+import { CtrlCmdClient, EDCB_TIME_MAX, Reader, systemTimeToDate, toEdcbTime } from './ctrlcmd.js';
+import { CMD, EpgEventInfo, enumPgInfoExParam, readServiceEventInfo, readServiceInfo, serviceKey } from './edcb-structs.js';
+import { genreName } from './genres.js';
 
 export interface ServiceInfo {
   onid: number;
@@ -65,6 +66,8 @@ export interface EventInfo {
   starttime: Date;
   durationSec: number;
   text: string;
+  /** 詳細情報（get_event_info用。番組表の一覧では空のことがある） */
+  extText: string;
   /** trueでスクランブル（有料）、falseで無料放送 */
   freeCAFlag: boolean;
   genre: Array<{ nibble1: number; nibble2: number; component_type_name: string }>;
@@ -176,6 +179,39 @@ export interface EdcbClientOptions {
   cacheTtlSec?: number;
 }
 
+export interface ServiceId {
+  onid: number;
+  tsid: number;
+  sid: number;
+}
+
+export interface EventTimeRange {
+  from?: Date;
+  to?: Date;
+}
+
+/** TCPで取得した番組をEventInfoにする。開始時刻が未定の番組はnull */
+function toEventInfo(e: EpgEventInfo, serviceName: string): EventInfo | null {
+  if (!e.startTime) return null;
+  return {
+    onid: e.onid,
+    tsid: e.tsid,
+    sid: e.sid,
+    eid: e.eid,
+    title: e.eventName,
+    service: serviceName,
+    starttime: systemTimeToDate(e.startTime),
+    durationSec: e.durationSec ?? 0,
+    text: e.text,
+    extText: e.extText,
+    freeCAFlag: e.freeCAFlag,
+    genre: e.genres.flatMap((g) => {
+      const name = genreName(g.nibble1, g.nibble2);
+      return name === null ? [] : [{ nibble1: g.nibble1, nibble2: g.nibble2, component_type_name: name }];
+    }),
+  };
+}
+
 export class EdcbClient {
   private http: AxiosInstance;
   private baseUrl: string;
@@ -220,23 +256,6 @@ export class EdcbClient {
       throw new EdcbError(err);
     }
     return entry;
-  }
-
-  /** index/countでページングされるAPI（未指定時は200件で打ち切られる）から全件を取得する */
-  private async fetchAllXmlItems(
-    path: string,
-    itemKey: string,
-    params?: Record<string, string | number | boolean>
-  ): Promise<any[]> {
-    const pageSize = 1000;
-    const items: any[] = [];
-    for (;;) {
-      const entry = await this.fetchXml(path, { ...params, index: items.length, count: pageSize });
-      const page = toArray(entry?.items?.[itemKey]);
-      items.push(...page);
-      if (page.length === 0 || items.length >= num(entry?.total)) break;
-    }
-    return items;
   }
 
   private async postForm(
@@ -322,13 +341,31 @@ export class EdcbClient {
     return this.parseEventInfo(events[0]);
   }
 
-  async getEventsForService(onid: number, tsid: number, sid: number, basic = 1): Promise<EventInfo[]> {
-    const id = `${onid}-${tsid}-${sid}`;
-    const events = await this.cached(`events:${id}:${basic}`, async () => {
-      const items = await this.fetchAllXmlItems('/api/EnumEventInfo', 'eventinfo', { id, basic });
-      return items.map((e: any) => this.parseEventInfo(e));
-    });
-    return events.slice();
+  /** 1チャンネルの番組表。番組表がないチャンネルは空配列を返す */
+  async getEventsForService(onid: number, tsid: number, sid: number, range?: EventTimeRange): Promise<EventInfo[]> {
+    return this.getEvents([{ onid, tsid, sid }], range);
+  }
+
+  /**
+   * 複数チャンネルの番組表を1回の通信で取得する。開始時刻が未定の番組は含めない。
+   * rangeは番組の開始時刻で絞り込む（from以上・to未満）
+   */
+  async getEvents(services: ServiceId[], range: EventTimeRange = {}): Promise<EventInfo[]> {
+    if (services.length === 0) return [];
+    const param = enumPgInfoExParam(
+      services.map((s) => serviceKey(s.onid, s.tsid, s.sid)),
+      range.from ? toEdcbTime(range.from) : 0n,
+      range.to ? toEdcbTime(range.to) : EDCB_TIME_MAX
+    );
+    const data = await this.ctrl.send(CMD.ENUM_PG_INFO_EX, param);
+    return new Reader(data)
+      .vec(readServiceEventInfo)
+      .flatMap(({ service, events }) =>
+        events.flatMap((e) => {
+          const ev = toEventInfo(e, service.service_name);
+          return ev ? [ev] : [];
+        })
+      );
   }
 
   private parseEventInfo(e: any): EventInfo {
@@ -343,6 +380,7 @@ export class EdcbClient {
       starttime: parseDate(str(e.startDate), str(e.startTime)),
       durationSec: num(e.duration),
       text: str(e.event_text),
+      extText: '',
       freeCAFlag: bool(e.freeCAFlag),
       genre: genres.map((g: any) => ({
         nibble1: num(g.nibble1),
