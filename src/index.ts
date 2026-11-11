@@ -494,7 +494,7 @@ server.registerTool('search_events', {
 
 // ---- 予約追加 ----
 server.registerTool('add_reserve', {
-  description: '番組の録画予約を追加します。EDCBのデフォルトプリセット設定で予約されます。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果 "[onid-tsid-sid-eid]" から取得してください。結果には追加した予約の日時・重複状態と、同じ時間帯の予約の件数（チューナー不足になった予約があればその一覧）を表示するため、重複確認のためにget_reservesを呼び直す必要はありません',
+  description: '番組の録画予約を追加します。EDCBのデフォルトプリセット設定で予約されます。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果 "[onid-tsid-sid-eid]" から取得してください。既に予約済みの番組は追加せず、その予約を返します。結果には追加した予約の日時・重複状態と、同じ時間帯の予約の件数（チューナー不足になった予約があればその一覧）を表示するため、重複確認のためにget_reservesを呼び直す必要はありません',
   inputSchema: {
     onid: z.number().describe('ネットワークID'),
     tsid: z.number().describe('トランスポートストリームID'),
@@ -502,12 +502,25 @@ server.registerTool('add_reserve', {
     eid: z.number().describe('イベントID'),
   },
 }, async ({ onid, tsid, sid, eid }) => {
+  const isSameEvent = (r: ReserveInfo) => r.onid === onid && r.tsid === tsid && r.sid === sid && r.eid === eid;
+  const before = await client.getReserves();
+  // EDCBは同じ番組の予約を重複して追加できてしまうため、予約済みなら追加しない
+  const existing = before.find(isSameEvent);
+  if (existing) {
+    return {
+      content: [{
+        type: 'text',
+        text: `この番組は既に予約されています（追加していません）。設定を変える場合はchange_reserve・set_reserve_enabledを使ってください\n${formatReserveLine(existing, false)}`,
+      }],
+    };
+  }
   const reserveId = await client.addReserve(onid, tsid, sid, eid);
   const reserves = await client.getReserves();
-  // 古いAPIは予約IDを返さないことがあるため、番組IDでも探す
+  // 古いAPIは予約IDを返さないことがあるため、追加前になかった同じ番組の予約でも探す
+  const beforeIds = new Set(before.map((r) => r.id));
   const added =
     reserves.find((r) => reserveId !== 0 && r.id === reserveId) ??
-    reserves.find((r) => r.onid === onid && r.tsid === tsid && r.sid === sid && r.eid === eid);
+    reserves.find((r) => !beforeIds.has(r.id) && isSameEvent(r));
   if (!added) {
     return {
       content: [{ type: 'text', text: `予約を追加しました（予約ID: ${reserveId}、番組: ${onid}-${tsid}-${sid}-${eid}）。予約一覧から見つからなかったため、get_reservesで確認してください` }],
