@@ -2,11 +2,12 @@
  * EDCBのCtrlCmdで使うコマンド番号と構造体の読み書き。
  * 構造体の並びはEDCBの Common/StructDef.h・Common/CtrlCmdUtil.cpp に合わせる
  */
-import { Reader, SystemTime, i64, vec } from './ctrlcmd.js';
+import { Reader, SystemTime, i32, i64, struct, u8, vec, wstr } from './ctrlcmd.js';
 
 /** コマンド番号（EDCBの Common/CtrlCmdDef.h） */
 export const CMD = {
   ENUM_SERVICE: 1021,
+  SEARCH_PG: 1025,
   ENUM_PG_INFO_EX: 1029,
 } as const;
 
@@ -109,4 +110,34 @@ export function readServiceEventInfo(r: Reader): { service: EpgServiceInfo; even
  */
 export function enumPgInfoExParam(serviceKeys: bigint[], enumStart: bigint, enumEnd: bigint): Buffer {
   return vec([...serviceKeys.flatMap((k) => [i64(0), i64(k)]), i64(enumStart), i64(enumEnd)]);
+}
+
+export interface SearchKey {
+  /** 検索キーワード（空白区切りでAND） */
+  andKey: string;
+  /** 除外キーワード */
+  notKey?: string;
+  /** タイトルのみを検索する（falseなら番組説明・詳細情報も検索する） */
+  titleOnly?: boolean;
+  /** 検索対象のサービスのキー（EDCBは空だと何も返さない） */
+  serviceKeys: bigint[];
+}
+
+/** EPGDB_SEARCH_KEY_INFO（CMD2_EPG_SRV_SEARCH_PGはバージョン0の形式で読む） */
+export function searchKeyInfo(key: SearchKey): Buffer {
+  return struct(
+    wstr(key.andKey),
+    wstr(key.notKey ?? ''),
+    i32(0), // regExpFlag
+    i32(key.titleOnly ? 1 : 0),
+    vec([]), // contentList
+    vec([]), // dateList
+    vec(key.serviceKeys.map((k) => i64(k))),
+    vec([]), // videoList
+    vec([]), // audioList
+    u8(0), // aimaiFlag
+    u8(0), // notContetFlag
+    u8(0), // notDateFlag
+    u8(0) // freeCAFlag
+  );
 }

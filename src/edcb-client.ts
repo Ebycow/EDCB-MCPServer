@@ -1,7 +1,16 @@
 import axios, { AxiosInstance } from 'axios';
 import * as xml2js from 'xml2js';
-import { CtrlCmdClient, EDCB_TIME_MAX, Reader, systemTimeToDate, toEdcbTime } from './ctrlcmd.js';
-import { CMD, EpgEventInfo, enumPgInfoExParam, readServiceEventInfo, readServiceInfo, serviceKey } from './edcb-structs.js';
+import { CtrlCmdClient, EDCB_TIME_MAX, Reader, systemTimeToDate, toEdcbTime, vec } from './ctrlcmd.js';
+import {
+  CMD,
+  EpgEventInfo,
+  enumPgInfoExParam,
+  readEventInfo,
+  readServiceEventInfo,
+  readServiceInfo,
+  searchKeyInfo,
+  serviceKey,
+} from './edcb-structs.js';
 import { genreName } from './genres.js';
 
 export interface ServiceInfo {
@@ -390,49 +399,30 @@ export class EdcbClient {
     };
   }
 
-  async searchEvents(keyword: string, serviceIds?: Array<{ onid: number; tsid: number; sid: number }>): Promise<EventInfo[]> {
-    const ctok = await this.getCsrfToken();
-    const body: Record<string, string | number | boolean> = {
-      ctok,
-      andKey: keyword,
-    };
-    if (serviceIds && serviceIds.length > 0) {
-      // Note: multiple serviceList values need special handling
-      // We use URLSearchParams manually
-      const params = new URLSearchParams();
-      params.append('ctok', ctok);
-      params.append('andKey', keyword);
-      for (const s of serviceIds) {
-        params.append('serviceList', `${s.onid}-${s.tsid}-${s.sid}`);
-      }
-      const bodyStr = params.toString();
-      const resp = await this.http.post('/api/SearchEvent', bodyStr, {
-        params: { basic: 1 },
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': String(Buffer.byteLength(bodyStr, 'utf8')),
-        },
-        responseType: 'text',
-      });
-      const result = await this.parser.parseStringPromise(resp.data);
-      const entry = result?.entry;
-      return toArray(entry?.items?.eventinfo).map((e: any) => this.parseEventInfo(e));
-    }
-
-    const bodyStr = Object.entries(body)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-      .join('&');
-    const resp = await this.http.post('/api/SearchEvent', bodyStr, {
-      params: { basic: 1 },
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': String(Buffer.byteLength(bodyStr, 'utf8')),
-      },
-      responseType: 'text',
+  /**
+   * EDCBの番組検索で探す（キーワードは空白区切りでAND、全角半角・大文字小文字を区別しない）。
+   * 開始時刻が未定の番組は含めない
+   */
+  async searchEvents(
+    keyword: string,
+    services: ServiceId[],
+    opts: { notKeyword?: string; titleOnly?: boolean } = {}
+  ): Promise<EventInfo[]> {
+    if (services.length === 0) return [];
+    const param = vec([
+      searchKeyInfo({
+        andKey: keyword,
+        notKey: opts.notKeyword,
+        titleOnly: opts.titleOnly,
+        serviceKeys: services.map((s) => serviceKey(s.onid, s.tsid, s.sid)),
+      }),
+    ]);
+    const data = await this.ctrl.send(CMD.SEARCH_PG, param);
+    const names = new Map((await this.getServices()).map((s) => [`${s.onid}-${s.tsid}-${s.sid}`, s.service_name]));
+    return new Reader(data).vec(readEventInfo).flatMap((e) => {
+      const ev = toEventInfo(e, names.get(`${e.onid}-${e.tsid}-${e.sid}`) ?? '');
+      return ev ? [ev] : [];
     });
-    const result = await this.parser.parseStringPromise(resp.data);
-    const entry = result?.entry;
-    return toArray(entry?.items?.eventinfo).map((e: any) => this.parseEventInfo(e));
   }
 
   async addReserve(onid: number, tsid: number, sid: number, eid: number): Promise<number> {
