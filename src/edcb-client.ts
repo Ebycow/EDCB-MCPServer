@@ -1,5 +1,4 @@
 import axios, { AxiosInstance } from 'axios';
-import * as xml2js from 'xml2js';
 import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, i64, systemTimeToDate, toEdcbTime, u32, vec } from './ctrlcmd.js';
 import {
   CMD,
@@ -129,70 +128,21 @@ export interface AutoAddInfo {
   recSetting: RecSetting;
 }
 
-/** EDCB（EMWUI）が<err>で返したエラー */
+/** EDCB（Material WebUI）が<err>で返したエラー */
 export class EdcbError extends Error {
   constructor(readonly detail: string) {
     super(`EDCB Error: ${detail}`);
   }
-
-  /** 番組・チャンネルの番組表が見つからないときのエラーか（EDCBは原因を区別せずこのメッセージを返す） */
-  get isEpgNotFound(): boolean {
-    return this.detail.includes('EPGデータを読み込み中、または存在しません');
-  }
 }
 
-function parseDate(startDate: string, startTime: string): Date {
-  const dateStr = `${startDate.replace(/\//g, '-')}T${startTime}+09:00`;
-  return new Date(dateStr);
-}
-
-function num(val: string | string[] | undefined): number {
-  const s = Array.isArray(val) ? val[0] : val;
-  return parseInt(s ?? '0', 10) || 0;
-}
-
-function str(val: string | string[] | undefined): string {
-  if (Array.isArray(val)) return val[0] ?? '';
-  return val ?? '';
-}
-
-function bool(val: string | string[] | undefined): boolean {
-  const s = Array.isArray(val) ? val[0] : val;
-  return s === '1' || s === 'true';
-}
-
-function toArray<T>(val: T | T[] | undefined): T[] {
-  if (!val) return [];
-  return Array.isArray(val) ? val : [val];
-}
-
-function parseRecSetting(r: any): RecSetting {
-  const folders = toArray(r?.recFolderList?.recFolderInfo);
-  // EMWUIの新しいAPIは<recEnabled>を返すが、古いAPIは返さず recMode=5 で無効を表す
-  const rawMode = num(r?.recMode);
-  const recEnabled = r?.recEnabled !== undefined ? bool(r.recEnabled) : rawMode !== 5;
-  return {
-    recEnabled,
-    recMode: rawMode,
-    priority: num(r?.priority),
-    tuijyuuFlag: bool(r?.tuijyuuFlag),
-    serviceMode: num(r?.serviceMode),
-    pittariFlag: bool(r?.pittariFlag),
-    batFilePath: str(r?.batFilePath),
-    suspendMode: num(r?.suspendMode),
-    rebootFlag: bool(r?.rebootFlag),
-    useMargineFlag: bool(r?.useMargineFlag),
-    startMargine: num(r?.startMargine),
-    endMargine: num(r?.endMargine),
-    continueRecFlag: bool(r?.continueRecFlag),
-    partialRecFlag: bool(r?.partialRecFlag),
-    tunerID: num(r?.tunerID),
-    recFolderList: folders.map((f: any) => ({
-      recFolder: str(f?.recFolder),
-      writePlugIn: str(f?.writePlugIn),
-      recNamePlugIn: str(f?.recNamePlugIn),
-    })),
-  };
+/** XMLの文字参照を戻す（Material WebUIの応答から値を1つ取り出すときに使う） */
+function decodeXmlText(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
 }
 
 export interface EdcbClientOptions {
@@ -287,7 +237,6 @@ const DEFAULT_RESERVE_ID = 0x7fffffff;
 export class EdcbClient {
   private http: AxiosInstance;
   private baseUrl: string;
-  private parser: xml2js.Parser;
   private ctrl: CtrlCmdClient;
   private cacheTtlMs: number;
   private cache = new Map<string, { expires: number; value: Promise<unknown> }>();
@@ -295,7 +244,6 @@ export class EdcbClient {
   constructor({ url, tcpHost, tcpPort = 4510, cacheTtlSec = 180 }: EdcbClientOptions) {
     this.baseUrl = url.replace(/\/$/, '');
     this.http = axios.create({ baseURL: this.baseUrl, timeout: 15000 });
-    this.parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: false });
     this.ctrl = new CtrlCmdClient(tcpHost || new URL(this.baseUrl).hostname, tcpPort);
     this.cacheTtlMs = cacheTtlSec * 1000;
   }
@@ -317,42 +265,6 @@ export class EdcbClient {
       if (this.cache.get(key)?.value === value) this.cache.delete(key);
     });
     return value;
-  }
-
-  private async fetchXml(path: string, params?: Record<string, string | number | boolean>): Promise<any> {
-    const resp = await this.http.get(path, { params, responseType: 'text' });
-    const result = await this.parser.parseStringPromise(resp.data);
-    const entry = result?.entry;
-    if (entry?.err) {
-      const err = Array.isArray(entry.err) ? entry.err.join(': ') : entry.err;
-      throw new EdcbError(err);
-    }
-    return entry;
-  }
-
-  private async postForm(
-    path: string,
-    body: Record<string, string | number | boolean>,
-    params?: Record<string, string | number>
-  ): Promise<any> {
-    const bodyStr = Object.entries(body)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-      .join('&');
-    const resp = await this.http.post(path, bodyStr, {
-      params,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': String(Buffer.byteLength(bodyStr, 'utf8')),
-      },
-      responseType: 'text',
-    });
-    const result = await this.parser.parseStringPromise(resp.data);
-    const entry = result?.entry;
-    if (entry?.err) {
-      const errs = toArray(entry.err);
-      throw new EdcbError(errs.join(': '));
-    }
-    return entry;
   }
 
   async getCsrfToken(): Promise<string> {
@@ -429,28 +341,6 @@ export class EdcbClient {
       );
   }
 
-  private parseEventInfo(e: any): EventInfo {
-    const genres = toArray(e.contentInfo);
-    return {
-      onid: num(e.ONID),
-      tsid: num(e.TSID),
-      sid: num(e.SID),
-      eid: num(e.eventID),
-      title: str(e.event_name) || str(e.title),
-      service: str(e.service_name),
-      starttime: parseDate(str(e.startDate), str(e.startTime)),
-      durationSec: num(e.duration),
-      text: str(e.event_text),
-      extText: '',
-      freeCAFlag: bool(e.freeCAFlag),
-      genre: genres.map((g: any) => ({
-        nibble1: num(g.nibble1),
-        nibble2: num(g.nibble2),
-        component_type_name: str(g.component_type_name),
-      })),
-    };
-  }
-
   /**
    * EDCBの番組検索で探す（キーワードは空白区切りでAND、全角半角・大文字小文字を区別しない）。
    * 開始時刻が未定の番組は含めない
@@ -477,18 +367,22 @@ export class EdcbClient {
     });
   }
 
+  /**
+   * 番組を録画予約する。追加した予約のIDを返す（返されなければ0）。
+   * 予約設定のプリセット（既定はID 0）はTCP接続では取得できないため、この操作だけは
+   * Material WebUIのワンクリック予約（HTTP API）を使い、プリセット0の設定で予約する
+   */
   async addReserve(onid: number, tsid: number, sid: number, eid: number): Promise<number> {
-    // Uses oneclick=1 which applies the default preset settings
     const ctok = await this.getCsrfToken();
-    const entry = await this.fetchXml('/api/SetReserve', {
-      oneclick: 1,
-      onid,
-      tsid,
-      sid,
-      eid,
-      ctok,
+    const resp = await this.http.get('/api/SetReserve', {
+      params: { oneclick: 1, onid, tsid, sid, eid, ctok },
+      responseType: 'text',
     });
-    return num(entry?.reserveinfo?.ID);
+    const xml = String(resp.data);
+    const errs = [...xml.matchAll(/<err>([^<]*)<\/err>/g)].map((m) => decodeXmlText(m[1]));
+    if (errs.length > 0) throw new EdcbError(errs.join(': '));
+    const id = /<reserveinfo>\s*<ID>(\d+)<\/ID>/.exec(xml);
+    return id ? Number(id[1]) : 0;
   }
 
   async deleteReserve(id: number): Promise<void> {
