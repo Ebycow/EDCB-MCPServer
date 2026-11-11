@@ -12,6 +12,8 @@ import {
   getRecMode,
   isNoRec,
   makeRecMode,
+  parseAndKey,
+  readAutoAddData,
   readEventInfo,
   readRecFileInfo,
   readReserveData,
@@ -112,7 +114,13 @@ export interface RecInfo {
 
 export interface AutoAddInfo {
   id: number;
+  /** EDCB独自の指定（無効・番組長など）を取り除いたキーワード */
   keyword: string;
+  enabled: boolean;
+  /** 番組長の下限（分、0で指定なし） */
+  durationMin: number;
+  /** 番組長の上限（分、0で指定なし） */
+  durationMax: number;
   notKeyword: string;
   titleOnlyFlag: boolean;
   freeCAFlag: number;
@@ -577,22 +585,25 @@ export class EdcbClient {
   }
 
   async getAutoAdd(): Promise<AutoAddInfo[]> {
-    const entry = await this.fetchXml('/api/EnumAutoAdd');
-    return toArray(entry?.items?.autoaddinfo).map((a: any) => {
-      const ss = a.searchsetting ?? {};
+    const r = await this.ctrl.sendVersioned(CMD.ENUM_AUTO_ADD2);
+    return r.vec(readAutoAddData).map((a) => {
+      const key = parseAndKey(a.searchInfo.andKey);
       return {
-        id: num(a.ID),
-        keyword: str(ss.andKey),
-        notKeyword: str(ss.notKey),
-        titleOnlyFlag: bool(ss.titleOnlyFlag),
-        freeCAFlag: num(ss.freeCAFlag),
-        serviceList: toArray(ss.serviceList).map((s: any) => ({
-          onid: num(s.onid),
-          tsid: num(s.tsid),
-          sid: num(s.sid),
+        id: a.dataID,
+        keyword: key.keyword,
+        enabled: !key.disabled,
+        durationMin: key.durationMin,
+        durationMax: key.durationMax,
+        notKeyword: a.searchInfo.notKey,
+        titleOnlyFlag: a.searchInfo.titleOnlyFlag,
+        freeCAFlag: a.searchInfo.freeCAFlag,
+        serviceList: a.searchInfo.serviceKeys.map((k) => ({
+          onid: Number((k >> 32n) & 0xffffn),
+          tsid: Number((k >> 16n) & 0xffffn),
+          sid: Number(k & 0xffffn),
         })),
-        addCount: num(a.addCount),
-        recSetting: parseRecSetting(a.recsetting),
+        addCount: a.addCount,
+        recSetting: toRecSetting(a.recSetting),
       };
     });
   }

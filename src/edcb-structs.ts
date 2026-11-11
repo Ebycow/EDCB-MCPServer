@@ -11,6 +11,7 @@ export const CMD = {
   CHG_RESERVE2: 2015,
   ENUM_RECINFO_BASIC2: 2020,
   GET_RECINFO2: 2024,
+  ENUM_AUTO_ADD2: 2131,
   DEL_RESERVE: 1014,
   ENUM_SERVICE: 1021,
   GET_PG_INFO: 1023,
@@ -377,4 +378,83 @@ export function readRecFileInfo(r: Reader): RecFileInfo {
     errInfo: s.wstr(),
     protectFlag: s.done ? false : s.u8() !== 0,
   }));
+}
+
+/** EPGDB_SEARCH_KEY_INFOのうち、自動予約の一覧表示で使う項目 */
+export interface SearchKeySummary {
+  andKey: string;
+  notKey: string;
+  regExpFlag: boolean;
+  titleOnlyFlag: boolean;
+  serviceKeys: bigint[];
+  freeCAFlag: number;
+}
+
+export function readSearchKeySummary(r: Reader): SearchKeySummary {
+  return r.struct((s) => {
+    const andKey = s.wstr();
+    const notKey = s.wstr();
+    const regExpFlag = s.i32() !== 0;
+    const titleOnlyFlag = s.i32() !== 0;
+    s.vec(() => null); // contentList（要素はサイズ付きの構造体なので配列ごと読み飛ばす）
+    s.vec(() => null); // dateList
+    const serviceKeys = s.vec((x) => x.i64());
+    s.vec(() => null); // videoList
+    s.vec(() => null); // audioList
+    s.u8(); // aimaiFlag
+    s.u8(); // notContetFlag
+    s.u8(); // notDateFlag
+    const freeCAFlag = s.u8();
+    return { andKey, notKey, regExpFlag, titleOnlyFlag, serviceKeys, freeCAFlag };
+  });
+}
+
+/** EPG_AUTO_ADD_DATA（CMD_VER 5の形式） */
+export interface AutoAddData {
+  dataID: number;
+  searchInfo: SearchKeySummary;
+  recSetting: RecSettingData;
+  addCount: number;
+}
+
+export function readAutoAddData(r: Reader): AutoAddData {
+  return r.struct((s) => ({
+    dataID: s.u32(),
+    searchInfo: readSearchKeySummary(s),
+    recSetting: readRecSetting(s),
+    addCount: s.done ? 0 : s.u32(),
+  }));
+}
+
+/** 自動予約のキーワード（andKey）の先頭に付く、EDCB独自の指定 */
+export interface AndKeyOptions {
+  /** 指定を取り除いたキーワード */
+  keyword: string;
+  /** 自動予約が無効（"^!{999}"） */
+  disabled: boolean;
+  /** 大文字小文字を区別する（"C!{999}"） */
+  caseSensitive: boolean;
+  /** 番組長の下限（分、0で指定なし。"D!{1mmmmMMMM}"） */
+  durationMin: number;
+  /** 番組長の上限（分、0で指定なし） */
+  durationMax: number;
+}
+
+/** andKeyを解釈する（EDCBの EpgDBManager.cpp InitializeSearchContext と同じ順・形式） */
+export function parseAndKey(andKey: string): AndKeyOptions {
+  let k = andKey;
+  const disabled = k.startsWith('^!{999}');
+  if (disabled) k = k.slice(7);
+  const caseSensitive = k.startsWith('C!{999}');
+  if (caseSensitive) k = k.slice(7);
+  let durationMin = 0;
+  let durationMax = 0;
+  const m = /^D!\{(1\d{8})\}/.exec(k);
+  if (m) {
+    const dur = Number(m[1]);
+    durationMin = Math.floor(dur / 10000) % 10000;
+    durationMax = dur % 10000;
+    k = k.slice(m[0].length);
+  }
+  return { keyword: k, disabled, caseSensitive, durationMin, durationMax };
 }
