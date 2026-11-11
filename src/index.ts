@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { EdcbClient, EventInfo, ReserveInfo } from './edcb-client.js';
+import { EdcbClient, EventInfo, RecInfo, ReserveInfo } from './edcb-client.js';
 import { ARIB_GENRES } from './genres.js';
 
 const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
@@ -572,21 +572,59 @@ server.registerTool('change_reserve', {
 /** 録画結果が正常終了（EDCBのREC_END_STATUS_NORMAL） */
 const REC_END_STATUS_NORMAL = 1;
 
-/** get_rec_infoで表示する最大件数（新しい順） */
-const REC_INFO_LIMIT = 200;
+/** offset・limitで切り出した範囲の表示。続きがあれば、続きを取得するoffsetを示す */
+function pageLabel(total: number, offset: number, shown: number): string {
+  if (shown === 0) return `${total}件（offset=${offset}以降はありません）`;
+  if (offset === 0 && shown === total) return `${total}件`;
+  const rest = total - offset - shown;
+  const range = `${total}件中${shown === 1 ? offset + 1 : `${offset + 1}〜${offset + shown}`}件目を表示`;
+  return rest > 0 ? `${range}（残り${rest}件。続きはoffset=${offset + shown}で取得できます）` : range;
+}
 
 // ---- 録画済み番組一覧 ----
 server.registerTool('get_rec_info', {
-  description: '録画済み番組の一覧を取得します。録画ファイルパス・ドロップ数・スクランブル数・録画結果を確認できます。録画結果はEDCBの説明文（正常なら「録画終了」）で表示し、正常に終わらなかった録画には⚠を付けます',
+  description: [
+    '録画済み番組の一覧を開始時刻の新しい順に取得します。録画ファイルパス・ドロップ数・スクランブル数・録画結果を確認できます。',
+    '録画結果はEDCBの説明文（正常なら「録画終了」）で表示し、正常に終わらなかった録画には⚠を付けます。',
+    '件数が多いため、一度に表示するのはlimit件（デフォルト50）までです。続きがある場合は先頭に「残りN件。続きはoffset=Xで取得できます」と表示するので、そのoffsetで再度呼び出してください。',
+    'タイトルのキーワード・期間（from/to）・問題のある録画（only="problem"）で絞り込めます。',
+  ].join(' '),
   inputSchema: {
-    id: z.number().optional().describe('特定の録画IDを指定（省略時は新しい順に最大200件）'),
+    id: z.number().optional().describe('特定の録画IDを指定'),
+    keyword: z.string().optional().describe('タイトルに含まれるキーワード（部分一致、全角半角を区別しない）'),
+    from: z.string().optional().describe('この日時以降に開始した録画に絞り込む（JST、形式: "YYYY-MM-DD HH:MM"）'),
+    to: z.string().optional().describe('この日時までに開始した録画に絞り込む（JST、形式: "YYYY-MM-DD HH:MM"）'),
+    only: z
+      .enum(['problem'])
+      .optional()
+      .describe('problem=正常に終わらなかった録画、またはドロップ・スクランブルがある録画だけにする'),
+    offset: z.number().int().min(0).optional().describe('先頭から飛ばす件数（続きを取得するとき。デフォルト0）'),
+    limit: z.number().int().min(1).optional().describe('最大件数（デフォルト50）'),
   },
-}, async ({ id }) => {
-  const all = await client.getRecInfo(id);
-  const infos = all.slice(0, REC_INFO_LIMIT);
-  if (infos.length === 0) {
-    return { content: [{ type: 'text', text: '録画済み番組がありません' }] };
+}, async ({ id, keyword, from, to, only, offset = 0, limit = 50 }) => {
+  const fromTime = from ? parseJSTString(from) : undefined;
+  const toTime = to ? parseJSTString(to) : undefined;
+  if ((fromTime && isNaN(fromTime.getTime())) || (toTime && isNaN(toTime.getTime()))) {
+    return { content: [{ type: 'text', text: 'from/toは "YYYY-MM-DD HH:MM" 形式（JST）で指定してください' }] };
   }
+  const all = await client.getRecInfo(id);
+  if (all.length === 0) {
+    return { content: [{ type: 'text', text: id === undefined ? '録画済み番組がありません' : `録画ID ${id} が見つかりません` }] };
+  }
+  const kw = keyword ? normalizeForSearch(keyword) : undefined;
+  const isProblem = (r: RecInfo) => r.recStatus !== REC_END_STATUS_NORMAL || r.drops > 0 || r.scrambles > 0;
+  const matched = all.filter(
+    (r) =>
+      (!kw || normalizeForSearch(r.title).includes(kw)) &&
+      (!fromTime || r.starttime >= fromTime) &&
+      (!toTime || r.starttime <= toTime) &&
+      (only !== 'problem' || isProblem(r))
+  );
+  const filtered = keyword || from || to || only;
+  if (matched.length === 0) {
+    return { content: [{ type: 'text', text: `録画済み番組: ${all.length}件\n条件に一致する録画はありません` }] };
+  }
+  const infos = matched.slice(offset, offset + limit);
   const text = infos
     .map((r) => {
       const start = client.formatTime(r.starttime);
@@ -597,8 +635,11 @@ server.registerTool('get_rec_info', {
       return `[ID:${r.id}] ${r.title}\n  チャンネル: ${r.service}\n  録画: ${start} (${dur}) ${status}${dropInfo}${scrambleInfo}\n  ファイル: ${r.recFilePath}`;
     })
     .join('\n\n');
+  const header = filtered
+    ? `録画済み番組: ${all.length}件\n条件に一致: ${pageLabel(matched.length, offset, infos.length)}`
+    : `録画済み番組: ${pageLabel(all.length, offset, infos.length)}`;
   return {
-    content: [{ type: 'text', text: `録画済み番組数: ${countLabel(all.length, infos.length)}\n\n${text}` }],
+    content: [{ type: 'text', text: text ? `${header}\n\n${text}` : header }],
   };
 });
 
