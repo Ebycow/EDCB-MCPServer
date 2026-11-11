@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import * as xml2js from 'xml2js';
-import { CtrlCmdClient, EDCB_TIME_MAX, Reader, systemTimeToDate, toEdcbTime, vec } from './ctrlcmd.js';
+import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, systemTimeToDate, toEdcbTime, vec } from './ctrlcmd.js';
 import {
   CMD,
   EpgEventInfo,
@@ -366,7 +366,12 @@ export class EdcbClient {
       range.from ? toEdcbTime(range.from) : 0n,
       range.to ? toEdcbTime(range.to) : EDCB_TIME_MAX
     );
-    const data = await this.ctrl.send(CMD.ENUM_PG_INFO_EX, param);
+    // 番組表があるチャンネルが1つもないと、EDCBは汎用エラーを返す
+    const data = await this.ctrl.send(CMD.ENUM_PG_INFO_EX, param).catch((e) => {
+      if (e instanceof CtrlCmdError && e.isNotFound) return null;
+      throw e;
+    });
+    if (!data) return [];
     return new Reader(data)
       .vec(readServiceEventInfo)
       .flatMap(({ service, events }) =>
