@@ -349,7 +349,7 @@ server.registerTool('get_epg', {
 
 // ---- 番組詳細取得 ----
 server.registerTool('get_event_info', {
-  description: '番組の詳細情報（フル説明文・ジャンル・無料/有料フラグ等）を取得します。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果から取得してください。予約前に内容を確認するときに使います',
+  description: '番組の詳細情報（番組説明・出演者などの詳細情報・ジャンル・無料/有料フラグ等）を取得します。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果から取得してください。予約前に内容を確認するときに使います',
   inputSchema: {
     onid: z.number().describe('ネットワークID'),
     tsid: z.number().describe('トランスポートストリームID'),
@@ -385,7 +385,8 @@ server.registerTool('get_event_info', {
 
 【番組説明】
 ${ev.text}`;
-  return { content: [{ type: 'text', text: text }] };
+  const extText = ev.extText.replace(/\r\n?/g, '\n').trim();
+  return { content: [{ type: 'text', text: extText ? `${text}\n\n【詳細情報】\n${extText}` : text }] };
 });
 
 // ---- 番組検索 ----
