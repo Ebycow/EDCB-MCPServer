@@ -4,19 +4,16 @@ EDCBをLLMから操作するためのMCPサーバー。番組情報取得、予�
 
 ## 前提
 
-EDCB（EpgTimerSrv）に、TCP接続とHTTP接続の2つで接続します。
+EDCB（EpgTimerSrv）にTCP接続（既定のポート4510。EpgTimerNWと同じ接続方法）で接続します。WebUIやMaterial WebUIは要りません。
 
-| 接続 | 使うツール | EDCB側の設定 |
-|------|-----------|-------------|
-| TCP（既定のポート4510） | 番組表・番組検索・予約一覧・予約の変更と削除・録画済み一覧・自動予約一覧など、ほとんどのツール | EpgTimerSrvの設定「ネットワーク接続を許可する (EpgTimerNW用)」（`EnableTCPSrv=1`）を有効にし、アクセス制御（`TCPAccessControlList`）でMCPサーバーを動かすマシンのIPを許可する |
-| HTTP（既定のポート5510） | `add_reserve`（予約設定のプリセットを使った予約）だけ | WebUIを有効にし、Material WebUIをインストールする（`/EMWUI/`パスが有効であること） |
+EDCB側では、EpgTimerSrvの設定「ネットワーク接続を許可する (EpgTimerNW用)」（`EnableTCPSrv=1`）を有効にし、アクセス制御（`TCPAccessControlList`）でMCPサーバーを動かすマシンのIPを許可してください。
 
 TCP接続は、HTTP APIより数倍速く、複数チャンネルの番組表の一括取得やEDCB側での番組検索ができます。
 
 > [!WARNING]
 > EDCBのTCP接続には認証がなく、接続元のIPアドレスでしか制限できません。アクセス制御で許可した範囲からは、誰でも予約の変更・削除ができます。許可する範囲は信頼できるネットワークに限ってください。
 
-接続を確認するには `ping` ツールを使います（TCP接続とHTTP接続の結果をそれぞれ表示します）。
+接続を確認するには `ping` ツールを使います。
 
 ## ビルド
 
@@ -36,7 +33,7 @@ npm run build
       "command": "node",
       "args": ["/path/to/EDCB-MCPServer/dist/index.js"],
       "env": {
-        "EDCB_URL": "http://192.168.1.x:5510"
+        "EDCB_HOST": "192.168.1.x"
       }
     }
   }
@@ -53,7 +50,7 @@ npm run build
 | `get_event_info` | 番組詳細取得（出演者などの詳細情報を含む） |
 | `search_events` | 番組検索（EDCBの検索機能を使用。空白区切りでAND、除外キーワード・タイトルのみ検索に対応） |
 | `get_reserves` | 録画予約一覧取得 |
-| `add_reserve` | 録画予約追加（デフォルトプリセット使用。予約済みの番組は追加しない） |
+| `add_reserve` | 録画予約追加（優先度・マージンなどを指定可。予約済みの番組は追加しない） |
 | `set_reserve_enabled` | 録画予約の有効/無効切り替え |
 | `delete_reserve` | 録画予約削除 |
 | `change_reserve` | 録画予約設定変更（指定した項目だけを変更） |
@@ -94,6 +91,9 @@ get_epg(onid=32272, tsid=32272, sid=30720)
 # 番組を予約
 add_reserve(onid=32272, tsid=32272, sid=30720, eid=20202)
 
+# 優先度と開始マージンを指定して予約
+add_reserve(onid=32272, tsid=32272, sid=30720, eid=20202, priority=4, startMargine=30)
+
 # 予約一覧確認
 get_reserves()
 
@@ -113,13 +113,15 @@ search_events(keyword="ドラマ 刑事", notKeyword="再放送", brief=True)
 get_rec_info(only="problem")
 ```
 
+`add_reserve` で録画設定を省略すると、EpgTimerの予約設定プリセット「デフォルト」の初期値（指定サービス・優先度2・番組追従あり・ぴったり録画なし。マージン・録画後動作・録画フォルダはEDCBの既定の設定）で予約します。プリセットはEDCBの `EpgTimerSrv.ini` にあり、TCP接続では読めないため、EpgTimer側でプリセット「デフォルト」を変更していても反映されません。
+
 一覧を返すツール（`get_epg`・`search_events`・`get_reserves`・`get_rec_info`）は、`limit` を超える分を省略します。続きがある場合は先頭に「1036件中1〜20件目を表示（残り1016件。続きはoffset=20で取得できます）」のように表示するので、`offset` を指定して続きを取得できます。
 
 ## 環境変数
 
 | 変数 | デフォルト | 説明 |
 |------|-----------|------|
-| `EDCB_URL` | `http://localhost:5510` | EDCBのHTTPサーバー（Material WebUI）のURL |
-| `EDCB_TCP_HOST` | `EDCB_URL`のホスト | EDCBのTCP接続のホスト |
-| `EDCB_TCP_PORT` | `4510` | EDCBのTCP接続のポート（EpgTimerSrvの設定`TCPPort`） |
+| `EDCB_HOST` | `localhost` | EDCB（EpgTimerSrv）を動かしているマシンのホスト名またはIPアドレス |
+| `EDCB_PORT` | `4510` | EDCBのTCP接続のポート（EpgTimerSrvの設定`TCPPort`） |
+| `EDCB_URL` | なし | 以前のHTTP接続用の設定。`EDCB_HOST` がなければ、このURLのホストに接続します（ポートは使いません） |
 | `EDCB_CACHE_SEC` | `180` | チャンネル一覧をキャッシュする秒数（`0`でキャッシュしない） |
