@@ -1,4 +1,3 @@
-import axios, { AxiosInstance } from 'axios';
 import { CtrlCmdClient, CtrlCmdError, EDCB_TIME_MAX, Reader, i64, systemTimeToDate, toEdcbTime, u32, vec } from './ctrlcmd.js';
 import {
   CMD,
@@ -8,6 +7,7 @@ import {
   RecFileInfo,
   RecSettingData,
   ReserveData,
+  defaultRecSetting,
   getRecMode,
   isNoRec,
   makeRecMode,
@@ -128,30 +128,11 @@ export interface AutoAddInfo {
   recSetting: RecSetting;
 }
 
-/** EDCB（Material WebUI）が<err>で返したエラー */
-export class EdcbError extends Error {
-  constructor(readonly detail: string) {
-    super(`EDCB Error: ${detail}`);
-  }
-}
-
-/** XMLの文字参照を戻す（Material WebUIの応答から値を1つ取り出すときに使う） */
-function decodeXmlText(s: string): string {
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
-}
-
 export interface EdcbClientOptions {
-  /** EDCBのHTTPサーバー（Material WebUI）のURL */
-  url: string;
-  /** TCP接続（CtrlCmd）のホスト。省略時はurlのホスト */
-  tcpHost?: string;
+  /** EDCB（EpgTimerSrv）のホスト */
+  host: string;
   /** TCP接続（CtrlCmd）のポート */
-  tcpPort?: number;
+  port?: number;
   /** チャンネル一覧・番組表を使い回す秒数（0で無効） */
   cacheTtlSec?: number;
 }
@@ -160,6 +141,19 @@ export interface ServiceId {
   onid: number;
   tsid: number;
   sid: number;
+}
+
+/** 予約の追加・変更で指定できる録画設定。指定しなかった項目は変えない */
+export interface RecSettingChange {
+  recMode?: number;
+  priority?: number;
+  tuijyuuFlag?: boolean;
+  pittariFlag?: boolean;
+  suspendMode?: number;
+  /** 開始マージン（秒） */
+  startMargine?: number;
+  /** 終了マージン（秒） */
+  endMargine?: number;
 }
 
 export interface EventTimeRange {
@@ -235,22 +229,13 @@ function toEventInfo(e: EpgEventInfo, serviceName: string): EventInfo | null {
 const DEFAULT_RESERVE_ID = 0x7fffffff;
 
 export class EdcbClient {
-  private http: AxiosInstance;
-  private baseUrl: string;
   private ctrl: CtrlCmdClient;
   private cacheTtlMs: number;
   private cache = new Map<string, { expires: number; value: Promise<unknown> }>();
 
-  constructor({ url, tcpHost, tcpPort = 4510, cacheTtlSec = 180 }: EdcbClientOptions) {
-    this.baseUrl = url.replace(/\/$/, '');
-    this.http = axios.create({ baseURL: this.baseUrl, timeout: 15000 });
-    this.ctrl = new CtrlCmdClient(tcpHost || new URL(this.baseUrl).hostname, tcpPort);
+  constructor({ host, port = 4510, cacheTtlSec = 180 }: EdcbClientOptions) {
+    this.ctrl = new CtrlCmdClient(host, port);
     this.cacheTtlMs = cacheTtlSec * 1000;
-  }
-
-  /** HTTP接続（Material WebUI）のURL */
-  get httpUrl(): string {
-    return this.baseUrl;
   }
 
   /** TCP接続（CtrlCmd）の接続先（"host:port"） */
@@ -270,13 +255,6 @@ export class EdcbClient {
       if (this.cache.get(key)?.value === value) this.cache.delete(key);
     });
     return value;
-  }
-
-  async getCsrfToken(): Promise<string> {
-    const resp = await this.http.get('/EMWUI/reserve.html', { responseType: 'text' });
-    const match = (resp.data as string).match(/ctok='([a-f0-9]+)'/);
-    if (!match) throw new Error('CSRFトークンを取得できませんでした');
-    return match[1];
   }
 
   async getServices(): Promise<ServiceInfo[]> {
@@ -305,13 +283,24 @@ export class EdcbClient {
 
   /** 番組が見つからないときはnullを返す */
   async getEventInfo(onid: number, tsid: number, sid: number, eid: number): Promise<EventInfo | null> {
+    const ev = await this.getEpgEvent(onid, tsid, sid, eid);
+    if (!ev) return null;
+    return toEventInfo(ev, await this.serviceName(onid, tsid, sid));
+  }
+
+  /** 番組表にある1番組の情報。見つからなければnull */
+  private async getEpgEvent(onid: number, tsid: number, sid: number, eid: number): Promise<EpgEventInfo | null> {
     const data = await this.ctrl.send(CMD.GET_PG_INFO, i64(eventKey(onid, tsid, sid, eid))).catch((e) => {
       if (e instanceof CtrlCmdError && e.isNotFound) return null;
       throw e;
     });
-    if (!data) return null;
+    return data ? readEventInfo(new Reader(data)) : null;
+  }
+
+  /** チャンネル一覧にあるサービス名（なければ空文字列） */
+  private async serviceName(onid: number, tsid: number, sid: number): Promise<string> {
     const service = (await this.getServices()).find((s) => s.onid === onid && s.tsid === tsid && s.sid === sid);
-    return toEventInfo(readEventInfo(new Reader(data)), service?.service_name ?? '');
+    return service?.service_name ?? '';
   }
 
   /** 1チャンネルの番組表。番組表がないチャンネルは空配列を返す */
@@ -373,21 +362,39 @@ export class EdcbClient {
   }
 
   /**
-   * 番組を録画予約する。追加した予約のIDを返す（返されなければ0）。
-   * 予約設定のプリセット（既定はID 0）はTCP接続では取得できないため、この操作だけは
-   * Material WebUIのワンクリック予約（HTTP API）を使い、プリセット0の設定で予約する
+   * 番組を録画予約する。録画設定はEpgTimerの予約設定プリセット「デフォルト」の初期値（defaultRecSetting）で、
+   * paramsで指定した項目だけを変える。EDCBは追加した予約のIDを返さないため、予約一覧から探すこと
    */
-  async addReserve(onid: number, tsid: number, sid: number, eid: number): Promise<number> {
-    const ctok = await this.getCsrfToken();
-    const resp = await this.http.get('/api/SetReserve', {
-      params: { oneclick: 1, onid, tsid, sid, eid, ctok },
-      responseType: 'text',
-    });
-    const xml = String(resp.data);
-    const errs = [...xml.matchAll(/<err>([^<]*)<\/err>/g)].map((m) => decodeXmlText(m[1]));
-    if (errs.length > 0) throw new EdcbError(errs.join(': '));
-    const id = /<reserveinfo>\s*<ID>(\d+)<\/ID>/.exec(xml);
-    return id ? Number(id[1]) : 0;
+  async addReserve(onid: number, tsid: number, sid: number, eid: number, params: RecSettingChange = {}): Promise<void> {
+    const id = `${onid}-${tsid}-${sid}-${eid}`;
+    const ev = await this.getEpgEvent(onid, tsid, sid, eid);
+    if (!ev) throw new Error(`番組 ${id} が番組表にありません。get_epgまたはsearch_eventsで確認してください`);
+    if (!ev.startTime || ev.durationSec === null) {
+      throw new Error(`番組 ${id} は開始時刻か長さが決まっていないため予約できません`);
+    }
+    if (systemTimeToDate(ev.startTime).getTime() + ev.durationSec * 1000 <= Date.now()) {
+      throw new Error(`番組 ${id} は放送が終わっているため予約できません`);
+    }
+    const recSetting = defaultRecSetting();
+    await this.applyRecSettingChange(recSetting, params);
+    const reserve: ReserveData = {
+      title: ev.eventName,
+      startTime: ev.startTime,
+      durationSecond: ev.durationSec,
+      stationName: await this.serviceName(onid, tsid, sid),
+      onid,
+      tsid,
+      sid,
+      eid,
+      comment: '',
+      reserveID: 0, // EDCBが割り当てる
+      overlapMode: 0,
+      startTimeEpg: ev.startTime,
+      recSetting,
+      reserveStatus: 0,
+      recFileNameList: [],
+    };
+    await this.ctrl.sendVersioned(CMD.ADD_RESERVE2, vec([writeReserveData(reserve)]));
   }
 
   async deleteReserve(id: number): Promise<void> {
@@ -417,20 +424,14 @@ export class EdcbClient {
   }
 
   /** 指定した項目だけを変える（有効・無効の状態は変えない） */
-  async changeReserve(
-    id: number,
-    params: {
-      recMode?: number;
-      priority?: number;
-      tuijyuuFlag?: boolean;
-      pittariFlag?: boolean;
-      suspendMode?: number;
-      startMargine?: number;
-      endMargine?: number;
-    }
-  ): Promise<void> {
+  async changeReserve(id: number, params: RecSettingChange): Promise<void> {
     const data = await this.getReserveData(id);
-    const rs = data.recSetting;
+    await this.applyRecSettingChange(data.recSetting, params);
+    await this.putReserveData(data);
+  }
+
+  /** 録画設定のうち、paramsで指定した項目だけを変える（有効・無効の状態は変えない） */
+  private async applyRecSettingChange(rs: RecSettingData, params: RecSettingChange): Promise<void> {
     if (params.recMode !== undefined) rs.recMode = makeRecMode(params.recMode, !isNoRec(rs.recMode));
     if (params.priority !== undefined) rs.priority = params.priority;
     if (params.tuijyuuFlag !== undefined) rs.tuijyuuFlag = params.tuijyuuFlag ? 1 : 0;
@@ -447,7 +448,6 @@ export class EdcbClient {
       if (params.startMargine !== undefined) rs.startMargine = params.startMargine;
       if (params.endMargine !== undefined) rs.endMargine = params.endMargine;
     }
-    await this.putReserveData(data);
   }
 
   /** 録画済み番組の一覧（開始時刻の新しい順）。idを指定するとその1件だけ */

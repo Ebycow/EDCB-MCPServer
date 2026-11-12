@@ -8,6 +8,7 @@ import { Reader, SystemTime, i32, i64, struct, systemTime, u16, u32, u8, vec, ws
 export const CMD = {
   ENUM_RESERVE2: 2011,
   GET_RESERVE2: 2012,
+  ADD_RESERVE2: 2013,
   CHG_RESERVE2: 2015,
   ENUM_RECINFO_BASIC2: 2020,
   GET_RECINFO2: 2024,
@@ -200,6 +201,32 @@ export function getRecMode(recMode: number): number {
 /** 録画モードと有効・無効からrecModeの値を作る（getRecMode・isNoRecの逆） */
 export function makeRecMode(mode: number, enabled: boolean): number {
   return enabled ? mode : DIV_RECMODE + ((mode + DIV_RECMODE - 1) % DIV_RECMODE);
+}
+
+/**
+ * 予約を追加するときの録画設定。EpgTimerの予約設定プリセット「デフォルト」（ID 0）の初期値と同じで、
+ * マージン・字幕とデータ放送・録画フォルダ・録画後の動作はEDCBの既定の設定を使う
+ * （プリセットはEpgTimerSrv.iniにあり、TCP接続では読めない）
+ */
+export function defaultRecSetting(): RecSettingData {
+  return {
+    recMode: 1, // 指定サービス
+    priority: 2,
+    tuijyuuFlag: 1,
+    serviceMode: 0, // RECSERVICEMODE_DEF（既定の設定を使う）
+    pittariFlag: 0,
+    batFilePath: '',
+    recFolderList: [], // 既定の録画フォルダ
+    suspendMode: 0, // 既定の設定を使う
+    rebootFlag: 0,
+    useMargineFlag: 0, // 既定のマージンを使う
+    startMargine: 0,
+    endMargine: 0,
+    continueRecFlag: 0,
+    partialRecFlag: 0,
+    tunerID: 0, // 自動
+    partialRecFolder: [],
+  };
 }
 
 /** RESERVE_DATA（CMD_VER 5の形式） */

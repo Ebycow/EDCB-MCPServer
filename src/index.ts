@@ -4,14 +4,25 @@ import { z } from 'zod';
 import { EdcbClient, EventInfo, RecInfo, ReserveInfo } from './edcb-client.js';
 import { ARIB_GENRES } from './genres.js';
 
-const EDCB_URL = process.env.EDCB_URL ?? 'http://localhost:5510';
-const EDCB_TCP_PORT = Number(process.env.EDCB_TCP_PORT ?? 4510);
+/** 接続先のホスト。以前のHTTP接続用の設定（EDCB_URL）しかなければ、そのホストを使う */
+function edcbHost(): string {
+  if (process.env.EDCB_HOST) return process.env.EDCB_HOST;
+  if (process.env.EDCB_URL) {
+    try {
+      return new URL(process.env.EDCB_URL).hostname;
+    } catch {
+      // URLとして読めなければ使わない
+    }
+  }
+  return 'localhost';
+}
+
+const EDCB_PORT = Number(process.env.EDCB_PORT ?? 4510);
 const EDCB_CACHE_SEC = Number(process.env.EDCB_CACHE_SEC ?? 180);
 
 const client = new EdcbClient({
-  url: EDCB_URL,
-  tcpHost: process.env.EDCB_TCP_HOST,
-  tcpPort: Number.isFinite(EDCB_TCP_PORT) ? EDCB_TCP_PORT : 4510,
+  host: edcbHost(),
+  port: Number.isFinite(EDCB_PORT) ? EDCB_PORT : 4510,
   cacheTtlSec: Number.isFinite(EDCB_CACHE_SEC) ? EDCB_CACHE_SEC : 180,
 });
 const server = new McpServer({
@@ -92,19 +103,21 @@ async function explainServiceWithoutEpg(onid: number, tsid: number, sid: number)
 // ---- サーバー接続確認 ----
 server.registerTool('ping', {
   description:
-    'EDCBサーバーへの接続確認。TCP接続（番組表・予約一覧など、ほとんどのツールで使用）とHTTP接続（add_reserveで使用）を確認し、認識済みチャンネル数を返します。他のツールが失敗するときにまず実行してください',
+    'EDCBサーバーへの接続確認。TCP接続を確認し、認識済みチャンネル数を返します。他のツールが失敗するときにまず実行してください',
   inputSchema: {},
 }, async () => {
-  const [tcp, http] = await Promise.allSettled([client.getServices(), client.getCsrfToken()]);
-  const lines = [
-    tcp.status === 'fulfilled'
-      ? `TCP接続（${client.tcpEndpoint}）: 成功。チャンネル数: ${tcp.value.length}`
-      : `TCP接続（${client.tcpEndpoint}）: 失敗 — ${tcp.reason instanceof Error ? tcp.reason.message : tcp.reason}。EDCBの設定でTCP接続（ネットワーク接続）が有効か、接続元が許可されているか確認してください`,
-    http.status === 'fulfilled'
-      ? `HTTP接続（${client.httpUrl}）: 成功`
-      : `HTTP接続（${client.httpUrl}）: 失敗 — ${http.reason instanceof Error ? http.reason.message : http.reason}。add_reserve以外のツールは使えます`,
-  ];
-  return { content: [{ type: 'text', text: lines.join('\n') }], isError: tcp.status === 'rejected' };
+  try {
+    const services = await client.getServices();
+    return { content: [{ type: 'text', text: `接続成功（${client.tcpEndpoint}）。チャンネル数: ${services.length}` }] };
+  } catch (e) {
+    return {
+      content: [{
+        type: 'text',
+        text: `接続失敗（${client.tcpEndpoint}）: ${e instanceof Error ? e.message : e}。EDCBの設定でTCP接続（ネットワーク接続）が有効か、接続元が許可されているか確認してください`,
+      }],
+      isError: true,
+    };
+  }
 });
 
 // ---- ジャンル一覧 ----
@@ -499,16 +512,32 @@ server.registerTool('search_events', {
   };
 });
 
+/** 予約の追加・変更で指定できる録画設定 */
+const recSettingSchema = {
+  priority: z.number().min(1).max(5).optional().describe('優先度（1-5）'),
+  recMode: z.number().min(0).max(4).optional().describe('録画モード（0=全サービス, 1=指定サービス, 2=全サービスデコードなし, 3=指定サービスデコードなし, 4=視聴）'),
+  tuijyuuFlag: z.boolean().optional().describe('番組追従（true/false）'),
+  pittariFlag: z.boolean().optional().describe('ぴったり録画（true/false）'),
+  suspendMode: z.number().min(0).max(4).optional().describe('録画後動作（0=デフォルト, 1=スタンバイ, 2=休止, 3=シャットダウン, 4=何もしない）'),
+  startMargine: z.number().optional().describe('開始マージン（秒）'),
+  endMargine: z.number().optional().describe('終了マージン（秒）'),
+};
+
 // ---- 予約追加 ----
 server.registerTool('add_reserve', {
-  description: '番組の録画予約を追加します。EDCBのデフォルトプリセット設定で予約されます。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果 "[onid-tsid-sid-eid]" から取得してください。既に予約済みの番組は追加せず、その予約を返します。結果には追加した予約の日時・重複状態と、同じ時間帯の予約の件数（チューナー不足になった予約があればその一覧）を表示するため、重複確認のためにget_reservesを呼び直す必要はありません',
+  description: [
+    '番組の録画予約を追加します。onid/tsid/sid/eidはget_epgまたはsearch_eventsの結果 "[onid-tsid-sid-eid]" から取得してください',
+    '録画設定を省略すると、EpgTimerの予約設定プリセット「デフォルト」の初期値（指定サービス・優先度2・番組追従あり・ぴったり録画なし。マージン・録画後動作・録画フォルダはEDCBの既定の設定）で予約します。優先度などを指定すると、その項目だけを変えて予約します。マージンを片方だけ指定した場合、もう片方はEDCBの既定値になります',
+    '既に予約済みの番組は追加せず、その予約を返します。結果には追加した予約の日時・重複状態と、同じ時間帯の予約の件数（チューナー不足になった予約があればその一覧）を表示するため、重複確認のためにget_reservesを呼び直す必要はありません',
+  ].join('。'),
   inputSchema: {
     onid: z.number().describe('ネットワークID'),
     tsid: z.number().describe('トランスポートストリームID'),
     sid: z.number().describe('サービスID'),
     eid: z.number().describe('イベントID'),
+    ...recSettingSchema,
   },
-}, async ({ onid, tsid, sid, eid }) => {
+}, async ({ onid, tsid, sid, eid, ...params }) => {
   const isSameEvent = (r: ReserveInfo) => r.onid === onid && r.tsid === tsid && r.sid === sid && r.eid === eid;
   const before = await client.getReserves();
   // EDCBは同じ番組の予約を重複して追加できてしまうため、予約済みなら追加しない
@@ -521,16 +550,14 @@ server.registerTool('add_reserve', {
       }],
     };
   }
-  const reserveId = await client.addReserve(onid, tsid, sid, eid);
+  await client.addReserve(onid, tsid, sid, eid, params);
   const reserves = await client.getReserves();
-  // 古いAPIは予約IDを返さないことがあるため、追加前になかった同じ番組の予約でも探す
+  // EDCBは追加した予約のIDを返さないため、追加前になかった同じ番組の予約を探す
   const beforeIds = new Set(before.map((r) => r.id));
-  const added =
-    reserves.find((r) => reserveId !== 0 && r.id === reserveId) ??
-    reserves.find((r) => !beforeIds.has(r.id) && isSameEvent(r));
+  const added = reserves.find((r) => !beforeIds.has(r.id) && isSameEvent(r));
   if (!added) {
     return {
-      content: [{ type: 'text', text: `予約を追加しました（予約ID: ${reserveId}、番組: ${onid}-${tsid}-${sid}-${eid}）。予約一覧から見つからなかったため、get_reservesで確認してください` }],
+      content: [{ type: 'text', text: `予約を追加しました（番組: ${onid}-${tsid}-${sid}-${eid}）。予約一覧から見つからなかったため、get_reservesで確認してください` }],
     };
   }
 
@@ -583,13 +610,7 @@ server.registerTool('change_reserve', {
   description: '既存の録画予約の設定（優先度・録画モード・マージン等）を変更します。予約IDはget_reservesで確認してください。指定した項目だけを変更し、省略した項目と有効・無効の状態はそのまま残ります。マージンを片方だけ指定した場合、既定のマージンを使っていた予約のもう片方はEDCBの既定値になります',
   inputSchema: {
     id: z.number().describe('変更する予約のID'),
-    priority: z.number().min(1).max(5).optional().describe('優先度（1-5）'),
-    recMode: z.number().min(0).max(4).optional().describe('録画モード（0=全サービス, 1=指定サービス, 2=全サービスデコードなし, 3=指定サービスデコードなし, 4=視聴）'),
-    tuijyuuFlag: z.boolean().optional().describe('番組追従（true/false）'),
-    pittariFlag: z.boolean().optional().describe('ぴったり録画（true/false）'),
-    suspendMode: z.number().min(0).max(4).optional().describe('録画後動作（0=デフォルト, 1=スタンバイ, 2=休止, 3=シャットダウン, 4=何もしない）'),
-    startMargine: z.number().optional().describe('開始マージン（秒）'),
-    endMargine: z.number().optional().describe('終了マージン（秒）'),
+    ...recSettingSchema,
   },
 }, async ({ id, ...params }) => {
   await client.changeReserve(id, params);
@@ -692,7 +713,7 @@ server.registerTool('get_auto_add', {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`EDCB MCP Server started (EDCB_URL: ${EDCB_URL}, TCP: ${client.tcpEndpoint})`);
+  console.error(`EDCB MCP Server started (EDCB: ${client.tcpEndpoint})`);
 }
 
 main().catch((err) => {
